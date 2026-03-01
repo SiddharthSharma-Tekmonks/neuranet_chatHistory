@@ -1,0 +1,286 @@
+<style>
+  :root { --chat-sb-w: 300px; }
+
+  /* backdrop */
+  #sb-backdrop { position: fixed; inset: 0; z-index: 999; background: transparent; display: none; }
+  body.sb-open #sb-backdrop { display: block; }
+
+  /* fixed overlay sidebar */
+  aside#sidebar {
+    position: fixed; left: 0; top: 0; height: 100vh; width: var(--chat-sb-w);
+    z-index: 1000; display: flex; flex-direction: column;
+    background: rgba(255,255,255,1);
+    -webkit-backdrop-filter: blur(10px) saturate(140%); backdrop-filter: blur(10px) saturate(140%);
+    border-right: 1px solid #bdbdbd; box-shadow: 0 1em 1em rgba(0,0,0,.28);
+    transform: translateX(-110%); transition: transform .22s ease; overflow: hidden;
+  }
+  body.sb-open aside#sidebar { transform: translateX(0); }
+
+  /* header */
+  #sidebar .sb-header {
+    display: flex; align-items: center; gap: .6em; padding: .9em 1em; font-weight: 600; user-select: none;
+    border-bottom: 1px solid rgba(0,0,0,.1); color: #4FB4ED;
+  }
+  #sidebar .sb-header .grow { flex: 1; }
+  #sidebar .sb-header button {
+    appearance: none; border: 0; background: transparent; cursor: pointer;
+    height: 2em; width: 2em; border-radius: .6em; font-size: 1.1em; line-height: 2em; color:#4FB4ED;
+  }
+  #sidebar .sb-header button:hover { background: rgba(79,180,237,.10); }
+
+  /* list */
+  #chatlist { overflow:visible; padding: .5em; }
+  .chat-item {
+    display: grid; grid-template-columns: 1fr auto; gap: .25em .75em;
+    padding: .6em .7em; border-radius: .7em; cursor: pointer; user-select: none; align-items: center;
+    position: relative;
+  }
+  .chat-item:hover  { background: rgba(79,180,237,.20); }
+  .chat-item.active { background: rgba(79,180,237,.20); }
+  .chat-item .text { display: grid; grid-template-columns: 1fr; gap: .25em; }
+  .chat-item .title { font-size: .95em; font-weight: 600; line-height: 1.25; color: #4FB4ED; }
+  .chat-item .meta  { grid-column: 1 / -1; font-size: .8em; opacity: .8; color: #4FB4ED; }
+
+  /* per-item '...' button */
+  .chat-item .more-btn {
+    appearance: none; border: 0; background: transparent; color: #4FB4ED;
+    width: 2em; height: 2em; border-radius: .5em; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .chat-item .more-btn:hover { background: rgba(79,180,237,.12); }
+  .chat-item .more-btn:focus { outline: 2px solid rgba(79,180,237,.5); outline-offset: 2px; }
+
+  /* per-item menu */
+  .chat-item .menu {
+    position: absolute; right: .4em; top: 2.6em; z-index: 1100;
+    min-width: 10em; padding: .35em; border-radius: .5em;
+    background: #fff; border: 1px solid #bdbdbd; box-shadow: 0 .5em 1.2em rgba(0,0,0,.15);
+    display: none;
+  }
+  .chat-item .menu.open { display: block; }
+  .chat-item .menu button {
+    width: 100%; text-align: left; background: transparent; border: 0; padding: .5em .6em;
+    border-radius: .4em; cursor: pointer; color: #005C84; font-size: .9em;
+  }
+  .chat-item .menu button:hover { background: rgba(79,180,237,.12); }
+
+  /* floating handle */
+  #sb-handle {
+    position: fixed; left: 0; top: 50%; transform: translate(0, -50%);
+    z-index: 1000; width: 36px; height: 72px; border-radius: 0 12px 12px 0;
+    background: rgb(255, 255, 255); -webkit-backdrop-filter: blur(8px) saturate(140%); backdrop-filter: blur(8px) saturate(140%);
+    border: 1px solid rgba(0,0,0,0.12); box-shadow: 1em 0 1em rgba(0,0,0,.15);
+    display: none; align-items: center; justify-content: center; cursor: pointer;
+    transition: background .15s ease, transform .2s ease, left .2s ease;
+  }
+  #sb-handle:hover { background: rgb(240, 240, 240); }
+  #sb-handle img.sb-arrow { width: 18px; height: 18px; opacity: .9; pointer-events: none; }
+  body[data-sb-enabled="1"] #sb-handle { display: flex; }
+  body.sb-open #sb-handle { left: var(--chat-sb-w); transform: translate(0, -50%); }
+
+  /* Default: both hidden */
+  #sb-handle .sb-arrow { display: none; }
+  /* Sidebar CLOSED ⇒ show RIGHT arrow */
+  body:not(.sb-open) #sb-handle .sb-arrow-right { display: block; }
+  /* when sidebar is OPEN ⇒ hide RIGHT arrow, show LEFT arrow */
+  body.sb-open #sb-handle .sb-arrow-right { display: none; }
+  body.sb-open #sb-handle .sb-arrow-left  { display: block; }
+
+  @media (max-width: 900px) {
+    aside#sidebar { width: min(88vw, var(--chat-sb-w)); }
+    body.sb-open #sb-handle { left: min(88vw, var(--chat-sb-w)); }
+  }
+
+  /* ===== Modal for Rename/Delete (styled like dialog-box) ===== */
+  #ch-modal-backdrop {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(0, 0, 0, 0.75);   /* same dark curtain feel */
+    display: none;
+    z-index: 100;                      /* same layer range as dialog-box */
+    align-items: center;
+    justify-content: center;
+  }
+  #ch-modal-backdrop.open {
+    display: flex !important;          /* mimic .visible in dialog-box */
+  }
+
+  #ch-modal {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    opacity: 0.98;
+    background: #ffffff;
+    padding: 3em;
+    border-radius: 10px;
+    box-shadow: 2px 2px 10px -2px rgba(0,0,0,0.25);
+    box-sizing: border-box;
+    min-width: 260px;
+    max-width: 440px;
+    animation: ch-flyin 0.1s linear forwards;
+  }
+
+  /* fly-in animation similar to dialog-box */
+  @keyframes ch-flyin {
+    0%   { filter: blur(4px); transform: translate(-50%, -100%); opacity: 0; }
+    25%  { filter: blur(3px); transform: translate(-50%, -88%);  opacity: 0.25; }
+    50%  { filter: blur(2px); transform: translate(-50%, -75%);  opacity: 0.50; }
+    75%  { filter: blur(1px); transform: translate(-50%, -63%);  opacity: 0.75; }
+    100% { filter: blur(0px); transform: translate(-50%, -50%);  opacity: 1.0; }
+  }
+
+  #ch-modal h3 {
+    margin: 0 0 0.8em 0;
+    color: #005C84;
+    font-size: 1.05em;
+    font-weight: 600;
+  }
+
+  #ch-modal .close-x {
+    position: absolute;
+    top: 15px;
+    right: 15px;
+    width: 28px;
+    height: 28px;
+    cursor: default;
+    user-select: none;
+    border: 0;
+    background: transparent;
+    border-radius: 6px;
+    font-size: 1.1em;
+    color: #005C84;
+  }
+  #ch-modal .close-x:hover {
+    filter: brightness(98%);
+    background-color: rgba(0,0,0,0.03);
+    transition: all 0.3s ease;
+  }
+
+  #ch-modal .field {
+    display: grid;
+    gap: 0.4em;
+    margin-bottom: 1em;
+  }
+  #ch-modal input[type="text"] {
+    width: 100%;
+    padding: 0.6em 0.7em;
+    border-radius: 0.5em;
+    border: 1px solid #b7dff2;
+    outline: none;
+    color: #005C84;
+    font-family: inherit;
+    box-sizing: border-box;
+  }
+
+  #ch-modal .row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.6em;
+  }
+  #ch-modal .hint {
+    font-size: 0.8em;
+    opacity: 0.7;
+    color: #005C84;
+  }
+
+  #ch-modal .actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.75em;
+    margin-top: 1.2em;
+  }
+
+  #ch-modal button {
+    padding: 10px;
+    min-width: 100px;
+    border-radius: 10px;
+    border-style: none;
+    outline: none;
+    text-align: center;
+    background-color: lightgray;
+    color: rgba(0, 0, 0, 0.75);
+    font-family: inherit;
+    font-size: smaller;
+    text-transform: uppercase;
+    cursor: default;
+    user-select: none;
+    box-sizing: border-box;
+  }
+
+  #ch-modal button:hover {
+    filter: brightness(98%);
+    transition: all 0.3s ease;
+  }
+
+  #ch-modal button.primary {
+    background-color: #4FB4ED;
+    color: #ffffff;
+  }
+
+  #ch-modal button.danger {
+    background-color: #fff3f3;
+    color: #b00020;
+  }
+
+  #ch-modal button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  @media (max-width: 480px) {
+    #ch-modal {
+      width: min(92vw, 440px);
+      padding: 2em;
+    }
+  }
+
+</style>
+
+<!-- transparent backdrop -->
+<div id="sb-backdrop"></div>
+
+<!-- Sidebar -->
+<aside id="sidebar" aria-label="Chat history">
+  <div class="sb-header">
+    <span class="grow">Chats</span>
+    <button id="sb-new" title="New chat">＋</button>
+    <button id="sb-collapse" title="Hide">⟨⟨</button>
+  </div>
+
+  <div id="chatlist">
+    <div class="chat-item" style="opacity:.7; cursor:default; color:#4FB4ED;">No chats yet</div>
+  </div>
+</aside>
+
+<!-- Floating handle -->
+<div id="sb-handle" title="Chat history">
+  <img class="sb-arrow sb-arrow-right" src="./img/chevron-right.svg" alt="Open" />
+  <img class="sb-arrow sb-arrow-left"  src="./img/chevron-left.svg"  alt="Close" />
+</div>
+
+<!-- ===== Rename/Delete Modal ===== -->
+<div id="ch-modal-backdrop" aria-hidden="true">
+  <div id="ch-modal" role="dialog" aria-modal="true" aria-labelledby="ch-modal-title">
+    <button class="close-x" id="ch-close" title="Cancel">✕</button>
+    <h3 id="ch-modal-title">Edit chat</h3>
+    <div class="field">
+      <label for="ch-title-input" class="hint">Title (max 40 characters)</label>
+      <input id="ch-title-input" type="text" maxlength="40" placeholder="Enter new title">
+      <div class="row">
+        <span class="hint" id="ch-count">0 / 40</span>
+        <!-- <span class="hint" id="ch-filename"></span> -->
+      </div>
+    </div>
+    <div class="actions">
+      <button id="ch-delete" class="danger" title="Delete this chat">Delete</button>
+      <span style="flex:1"></span>
+      <button id="ch-cancel">Cancel</button>
+      <button id="ch-save" class="primary" disabled>Save</button>
+    </div>
+  </div>
+</div>

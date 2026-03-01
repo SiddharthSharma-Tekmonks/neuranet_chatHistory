@@ -50,6 +50,8 @@ async function _createdata(data) {
             app = (appsAllowed.filter(app => app.id == appidToOpen))[0];
         viewPath = getViewPath(app, loginresponse.org);
         aiendpoint = app.endpoint; activeaiapp = app;
+        data.showSidebar = !!activeaiapp && activeaiapp.interface?.type !== APP_CONSTANTS.VIEW_CHOOSER ;
+        if (appidToOpen=='aiworkshop') data.showSidebar=false;
     }
 
      // load the given app if forced, or if apps allowed is just one, else load chooser
@@ -64,6 +66,7 @@ async function _createdata(data) {
                 `${APP_CONSTANTS.VIEWS_PATH}/${app.interface.type.toString()}/img/icon.svg`, 
             viewlabel: app.interface.label||await i18n.get(`ViewLabel_${app.interface.type.toString()}`), 
             viewid: app.id});
+            data.showSidebar = false;   // chooser: no sidebar
     } 
 
     // now load the view's HTML
@@ -79,9 +82,15 @@ const closeview = _ => loginappMain.gohome();
 
 async function openView(appid) {
     session.set(APP_CONSTANTS.FORCE_LOAD_VIEW, appid);
+    const id = session.get(APP_CONSTANTS.USERID);
+    const org = session.get(APP_CONSTANTS.USERORG);
+    let time = new Date().toISOString();
+    const chat_filename = `_${org}_${id}_${time}.ndjson`;
+    session.set(APP_CONSTANTS.CHAT_FILENAME, chat_filename);
     const {loginmanager} = await import (`${APP_CONSTANTS.LIB_PATH}/loginmanager.mjs`);
     loginmanager.addLogoutListener(`${MODULE_PATH}/neuranetapp.mjs`, "neuranetapp", "onlogout");
-
+    session.remove(APP_CONSTANTS.CHAT_SESSION_ID);
+    session.remove(APP_CONSTANTS.CHAT_HISTORY_CONVERSATION);
     router.navigate(APP_CONSTANTS.MAIN_HTML);
 }
 

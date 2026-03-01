@@ -14,6 +14,9 @@ import {util} from "/framework/js/util.mjs";
 import {marked} from "./3p/marked.esm.min.js";
 import {router} from "/framework/js/router.mjs";
 import {monkshu_component} from "/framework/js/monkshu_component.mjs";
+import {chat_history} from "../chatHistory/chatHistory.mjs";
+import {session} from "/framework/js/session.mjs";
+import {apimanager as apiman} from "/framework/js/apimanager.mjs";
 
 const COMPONENT_PATH = util.getModulePathFromURL(import.meta.url), DEFAULT_MAX_ATTACH_SIZE = 4194304,
     DEFAULT_MAX_ATTACH_SIZE_ERROR = "File size is larger than allowed size",
@@ -38,12 +41,34 @@ async function elementRendered(host) {
     const shadowRoot = chat_box.getShadowRootByHost(host);
     const textareaEdit = shadowRoot.querySelector("textarea#messagearea")
     textareaEdit.focus();
+
+    if (!shadowRoot.host.dataset.preloaded) {
+        shadowRoot.host.dataset.preloaded = "1";
+        const contained = shadowRoot.querySelector("div#body") || shadowRoot; // any inner element works
+        try {
+            await preloadArchiveIfAny(contained);
+        } catch (e) {
+            console.warn("Preload archive failed:", e);
+        }
+    }
 }
 
 async function send(containedElement) {
     const shadowRoot = chat_box.getShadowRootByContainedElement(containedElement), host = chat_box.getHostElement(containedElement);
     const userMessageArea = shadowRoot.querySelector("textarea#messagearea"), userPrompt = userMessageArea.value.trim();
     if (userPrompt == "") return;    // empty prompt, ignore
+
+    const chatArchiveAppenderAPI = `${APP_CONSTANTS.API_PATH}/chatArchiveAppender`;
+    const id = session.get(APP_CONSTANTS.USERID);
+    const org = session.get(APP_CONSTANTS.USERORG);
+    const ai_app = session.get(APP_CONSTANTS.FORCE_LOAD_VIEW);
+    let curr_filename = session.get(APP_CONSTANTS.CHAT_FILENAME);
+
+    if (!curr_filename) {
+        let time = new Date().toISOString();
+        curr_filename = `_${org}_${id}_${time}.ndjson`;
+        session.set(APP_CONSTANTS.CHAT_FILENAME, curr_filename);
+    }
 
     // disable send box and controls
     const divMessage = shadowRoot.querySelector("div#message"),
@@ -54,30 +79,266 @@ async function send(containedElement) {
     if (attachImg) attachImg.style.pointerEvents = "none";
     buttonSendImg.src = `${COMPONENT_PATH}/img/spinner.svg`; userMessageArea.readOnly = true;
 
-    // insert the user's message
     const message_id = `${Date.now()}${Math.floor(Math.random() * 1000) + 1}`; last_message_id = message_id;
     _insertAIRequest(shadowRoot, userMessageArea, userPrompt, message_id);
-    
-    // send the message to the backend to get a response
-    const onRequest = host.getAttribute("onrequest"); 
+
+    const chatsession_id = session.get(APP_CONSTANTS.CHAT_SESSION_ID);
+    const attachedFiles = _getMemory(containedElement).FILES_ATTACHED;
+    const user_message_history_request = { role: 'user', message: userPrompt, chat_filename: curr_filename, id, org, ai_app, chatsession_id };
+
+    // Include file metadata if files are attached
+    if (attachedFiles && attachedFiles.length > 0) {
+        user_message_history_request.files = attachedFiles.map(f => ({ filename: f.filename, fileid: f.fileid }));
+    }
+
+    apiman.rest(chatArchiveAppenderAPI, "POST", user_message_history_request, true);
+
+    const onRequest = host.getAttribute("onrequest");
     const wrappedChatBox = {
-        insertAIResponse: async (processedResult, message_id=last_message_id) => {
-            await _insertAIResponse(shadowRoot, processedResult[processedResult.ok?"response":"error"], processedResult.mime, message_id);
-            if (!processedResult.ok) {  // sending more messages is now disabled as this chat is dead due to error
+        insertAIResponse: async (processedResult, msg_id=last_message_id) => {
+            await _insertAIResponse(shadowRoot, processedResult[processedResult.ok?"response":"error"], processedResult.mime, msg_id);
+            const ai_message_history_request = { role: 'assistant', message: processedResult[processedResult.ok?"response":"error"], chat_filename: curr_filename, id, org, ai_app };
+            apiman.rest(chatArchiveAppenderAPI, "POST", ai_message_history_request, true);
+            await chat_history.refreshSidebarChats();
+            if (!processedResult.ok) {
                 buttonSendImg.onclick = ''; buttonSendImg.src = `${COMPONENT_PATH}/img/senddisabled.svg`;
-            } else { // enable sending more messages
+            } else {
                 buttonSendImg.src = `${COMPONENT_PATH}/img/send.svg`;
                 divMessage.classList.remove("disabled"), checkBox.removeAttribute("disabled");
                 if (attachImg) attachImg.style.pointerEvents = "";
                 userMessageArea.readOnly = false;
-            }   
+            }
         },
-        insertAIThoughts: (thoughts, thoughts_mime, message_id=last_message_id) => _insertAIThoughts(shadowRoot, thoughts, thoughts_mime, message_id),
+        insertAIThoughts: (thoughts, thoughts_mime, msg_id=last_message_id) => _insertAIThoughts(shadowRoot, thoughts, thoughts_mime, msg_id),
         getCollapsibleSection: (title, content) => _getCollapsibleSection(containedElement, title, content),
-        getAIContent: message_id => _getAIResponseContent(shadowRoot, message_id=last_message_id)||""
-    }
+        getAIContent: msg_id => _getAIResponseContent(shadowRoot, msg_id||last_message_id)||""
+    };
     const requestProcessor = util.createAsyncFunction(`return await ${onRequest};`);
     requestProcessor({chatbox: wrappedChatBox, message_id, prompt: userPrompt, files: _getMemory(containedElement).FILES_ATTACHED});
+}
+
+/* === Preload archived chat into the chatbox === */
+async function preloadArchiveIfAny(containedElement) {
+    const pre = session.get(APP_CONSTANTS.CHAT_HISTORY_CONVERSATION);
+    if (!Array.isArray(pre) || !pre.length) return;
+
+    // Clear it so we don't render twice on subsequent loads
+    session.remove(APP_CONSTANTS.CHAT_HISTORY_CONVERSATION);
+
+    const shadowRoot = chat_box.getShadowRootByContainedElement(containedElement);
+    const userMessageArea = shadowRoot.querySelector("textarea#messagearea");
+    if (!shadowRoot || !userMessageArea) return;
+
+    // Make the chat area visible (same as send() does)
+    shadowRoot.querySelector("div#start")?.classList.replace("visible", "hidden");
+    const chatScroller = shadowRoot.querySelector("div#chatscroller");
+    chatScroller?.classList.replace("hidden", "visible");
+
+    // Walk through objects and render
+    let i = 0;
+    while (i < pre.length) {
+        const curr = pre[i] || {};
+        const role = String(curr.role || curr.type || "").toLowerCase();
+        const msg = String(curr.message || curr.content || "");
+
+        if (role === "user" || role === "system") {
+            // Create a new insertion div with user's message
+            const message_id = `${Date.now()}${Math.floor(Math.random() * 1000) + 1}${i}`;
+            _insertAIRequest(shadowRoot, userMessageArea, msg, message_id);
+
+            // Display attached files if any
+            if (curr.files && Array.isArray(curr.files) && curr.files.length > 0) {
+                _displayArchivedFiles(shadowRoot, message_id, curr.files);
+            }
+
+            // Check if next message is assistant (pair them in same card)
+            const next = pre[i + 1] || {};
+            const nextRole = String(next.role || next.type || "").toLowerCase();
+            const nextMsg = next.message || next.content || "";
+
+            if (next && nextMsg && nextRole === "assistant") {
+                // Fill in the AI response in the same insertion div
+                await _insertAIResponse(shadowRoot, nextMsg, next.mime || "text/markdown", message_id);
+                i += 2;
+                continue;
+            }
+
+            // If no assistant follows, just show user's message row
+            i += 1;
+            continue;
+        }
+
+        if (role === "assistant") {
+            // No preceding user: create a new insertion with empty user section and AI response
+            const message_id = `${Date.now()}${Math.floor(Math.random() * 1000) + 1}${i}`;
+            _insertAIRequest(shadowRoot, userMessageArea, "(Assistant)", message_id);
+            await _insertAIResponse(shadowRoot, msg, curr.mime || "text/markdown", message_id);
+            i += 1;
+            continue;
+        }
+
+        // Unknown role: skip
+        i += 1;
+    }
+
+    // Scroll to bottom when done
+    if (chatScroller) chatScroller.scrollTop = chatScroller.scrollHeight;
+}
+
+async function startVoiceInput(containedElement) {
+    console.log("STT: Triggered");
+
+    const shadowRoot = chat_box.getShadowRootByContainedElement(containedElement);
+    const textarea = shadowRoot.querySelector("textarea#messagearea");
+    const micButton = shadowRoot.querySelector("img#mic");
+    const disMessage = shadowRoot.querySelector("div#message");
+    const host = chat_box.getHostElement(containedElement);
+
+    const sttAPI = `${APP_CONSTANTS.API_PATH}/voiceTools`;
+    console.log("STT: API endpoint →", sttAPI);
+
+    let mediaRecorder, audioChunks = [], stream;
+
+    const showSpinner = () => {
+        textarea.readOnly = true;
+        disMessage.classList.add("disabled");
+        micButton.dataset.originalSrc = micButton.src;
+        micButton.src = `${COMPONENT_PATH}/img/spinner.svg`;
+        micButton.classList.add("rotating");
+    };
+    const restoreMic = () => {
+        textarea.readOnly = false;
+        disMessage.classList.remove("disabled");
+        micButton.src = micButton.dataset.originalSrc;
+        micButton.classList.remove("rotating");
+    };
+
+    const handleRecordingStop = async () => {
+        console.log("STT: Recording stopped, preparing request...");
+        showSpinner(); 
+        const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
+        const audioBase64 = await _blobToBase64(audioBlob);
+        stream.getTracks().forEach(t => t.stop()); 
+
+        const request = { 
+            service: "stt", 
+            id: session.get(APP_CONSTANTS.USERID), 
+            org: session.get(APP_CONSTANTS.USERORG), 
+            audiofile: audioBase64 
+        };
+
+        try {
+            const result = await apiman.rest(sttAPI, "POST", request, true);
+            console.log("STT: API raw response →", result);
+
+            const transcript = result?.text || "";
+            if (result?.result && transcript.trim()) {
+                textarea.value = transcript.trim();
+                textarea.focus();
+                console.log("STT: Transcription →", transcript);
+            } else {
+                console.error("STT: API returned no valid transcription");
+                alert("Voice recognition failed: " + (result?.reason || "Unknown error"));
+            }
+        } catch (err) {
+            console.error("STT API Error:", err);
+            alert("STT service unavailable");
+        } finally {
+            restoreMic(); 
+        }
+    };
+
+    micButton.onmousedown = async () => {
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorder = new MediaRecorder(stream);
+            audioChunks = [];
+
+            mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+            mediaRecorder.onstop = handleRecordingStop;
+
+            mediaRecorder.start();
+            console.log("STT: Recording started (hold mic to record)...");
+        } catch (err) {
+            console.error("Voice input error:", err);
+            alert("Microphone access failed");
+        }
+    };
+
+    micButton.onmouseup = micButton.ontouchend = () => {
+        if (mediaRecorder && mediaRecorder.state === "recording") {
+            mediaRecorder.stop();
+            console.log("STT: Recording stopped by user.");
+        }
+    };
+}
+
+async function playTTS(containedElement) {
+    console.log("TTS: Triggered");
+    try {
+        const shadowRoot = chat_box.getShadowRootByContainedElement(containedElement);
+        const aiResponseEl = containedElement.closest("span#aicontentholder")?.querySelector("span#airesponse");
+
+        if (!aiResponseEl) {
+            console.error("TTS: AI response element not found");
+            return;
+        }
+
+        const text = aiResponseEl.innerText.trim();
+        if (!text) {
+            console.warn("TTS: No text available to synthesize");
+            return;
+        }
+
+        const host = chat_box.getHostElement(containedElement);
+        const ttsAPI =  `${APP_CONSTANTS.API_PATH}/voiceTools`;
+        console.log("TTS: API endpoint →", ttsAPI);
+
+        const result = await apiman.rest(ttsAPI, "POST", { service: "tts",id: session.get(APP_CONSTANTS.USERID), org: session.get(APP_CONSTANTS.USERORG), text }, true);
+        console.log("TTS: API raw response →", result);
+
+        if (!result?.result) {
+            console.error("TTS: API returned failure", result);
+            alert("TTS playback failed: " + (result?.reason || "Unknown error"));
+            return;
+        }
+
+        let audioBase64 = result.audiofile;
+        if (!audioBase64 && result.response?.audiofile) {
+            audioBase64 = result.response.audiofile;
+        }
+
+        const onResult = host.getAttribute("onresult");
+        if (onResult) {
+            const resultProcessor = util.createAsyncFunction(`return await ${onResult};`);
+            const processedResult = await resultProcessor({ chatbox: this, result });
+            if (processedResult?.ok && processedResult.response?.audiofile) {
+                audioBase64 = processedResult.response.audiofile;
+            }
+        }
+
+        if (audioBase64) {
+            const audioSrc = `data:audio/mp3;base64,${audioBase64}`;
+            const audio = new Audio(audioSrc);
+            audio.play().catch(err => console.error("TTS: Playback error", err));
+            console.log("TTS: Playing audio...");
+        } else {
+            console.error("TTS: No audiofile found in API response");
+            alert("TTS playback failed: Missing audio data");
+        }
+    } catch (err) {
+        console.error("TTS Error:", err);
+        alert("TTS service unavailable");
+    }
+}
+
+function _blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+    });
 }
 
 async function attach(containedElement) {
@@ -190,6 +451,41 @@ function _insertAIRequest(shadowRoot, userMessageArea, userPrompt, message_id) {
     userMessageArea.placeholder = "";   // disable placeholders after the initial starter prompt
     userMessageArea.value = ""; // clear text area for the next prompt
     _detachAllFiles(shadowRoot, false);  // clear file attachments
+}
+
+/**
+ * Display archived files in a user message when loading chat history
+ */
+function _displayArchivedFiles(shadowRoot, message_id, files) {
+    const insertion = shadowRoot.querySelector(`div.insertiondiv#c${message_id}`);
+    if (!insertion) return;
+
+    const userpromptSpan = insertion.querySelector("span.userprompt");
+    if (!userpromptSpan) return;
+
+    // Create files container
+    const filesDiv = document.createElement("div");
+    filesDiv.className = "user-files";
+
+    // Add each file
+    for (const file of files) {
+        const fileSpan = document.createElement("span");
+        fileSpan.className = "user-file";
+
+        const icon = document.createElement("img");
+        icon.id = "fileicon";
+        icon.src = `${COMPONENT_PATH}/img/file.svg`;
+
+        const nameSpan = document.createElement("span");
+        nameSpan.id = "name";
+        nameSpan.textContent = file.filename || file.stored_filename || "file";
+
+        fileSpan.appendChild(icon);
+        fileSpan.appendChild(nameSpan);
+        filesDiv.appendChild(fileSpan);
+    }
+
+    userpromptSpan.appendChild(filesDiv);
 }
 
 function _insertAIThoughts(shadowRoot, thoughts, thoughts_mime="text/markdown", message_id=last_message_id) {

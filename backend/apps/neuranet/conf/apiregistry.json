@@ -12,6 +12,12 @@
     "/apps/{{app}}/indexdoc" : "/apis/indexdoc.js?checksec_immediate=false&customSecurity=neuranet_key_checker&neuranet_key_checker_enforce_for_jwt=id,org",
     "/apps/{{app}}/unindexdoc" : "/apis/unindexdoc.js?checksec_immediate=false&customSecurity=neuranet_key_checker&neuranet_key_checker_enforce_for_jwt=id,org",
     "/apps/{{app}}/voicetools" : "/apis/voicetools.js?keys=fheiwu98237hjief8923ydewjidw834284hwqdnejwr79389&needsToken=true&checkClaims=id,org",
+    
+    "/apps/{{app}}/chatArchiveAppender" : "/apis/chatArchiveAppender.js?keys=fheiwu98237hjief8923ydewjidw834284hwqdnejwr79389&needsToken=true&checkClaims=id,org",
+    "/apps/{{app}}/sendChatArchiveList" : "/apis/sendChatArchiveList.js?keys=fheiwu98237hjief8923ydewjidw834284hwqdnejwr79389&needsToken=true&checkClaims=id,org",
+    "/apps/{{app}}/sendChatHistory" : "/apis/sendChatHistory.js?keys=fheiwu98237hjief8923ydewjidw834284hwqdnejwr79389&needsToken=true&checkClaims=id,org",
+    "/apps/{{app}}/updateChatArchive" : "/apis/updateChatArchive.js?keys=fheiwu98237hjief8923ydewjidw834284hwqdnejwr79389&needsToken=true&checkClaims=id,org",
+    "/apps/{{app}}/uploadChatFile" : "/apis/uploadChatFile.js?keys=fheiwu98237hjief8923ydewjidw834284hwqdnejwr79389&needsToken=true&checkClaims=id,org",
 
     
     "/apps/{{app}}/getfiles" : "/xbinapp/apis/getfiles.js?get=true&keys=fheiwu98237hjief8923ydewjidw834284hwqdnejwr79389&needsToken=user,admin",

@@ -13,10 +13,13 @@
     "APP_ABOUT_URL": "https://neuranet.com/",
     
     "COMPONENTS": ["components/chat-box", "components/file-manager", 
-        "components/bread-crumbs", "components/span-with-menu", "components/dialog-box", "components/context-menu"],
+        "components/bread-crumbs", "components/span-with-menu", "components/dialog-box", "components/context-menu","components/chatHistory"],
     "FORCE_LOAD_VIEW": "___org_monkshu_loginapp_force_load_view",
     "VIEWS_RELATIVE_PATH": "/views",
     "VIEW_CHOOSER": "chooser",
+    "CHAT_FILENAME": "chat_filename",
+    "CHAT_HISTORY_CONVERSATION" : "CHAT_HISTORY_CONVERSATION",
+    "CHAT_SESSION_ID" : "CHAT_SESSION_ID",
 
     "TKMLOGINAPP_URL": "https://login.tekmonks.com"
 }

@@ -151,6 +151,9 @@ span#mobilefooter > img {
     <link rel="apple-touch-icon" href="./img/logob.png">
 
 	<link href="./img/favicon.ico" rel="icon" type="image/x-icon">
+	<link rel="modulepreload" href="./components/chatHistory/chatHistory.mjs">
+	<link rel="preload" href="./components/chatHistory/chatHistory.html" as="fetch" crossorigin="anonymous">
+
 
 	<script type="module">
 	import {main} from "./js/main.mjs"; monkshu_env.apps[APP_CONSTANTS.APP_NAME].main = main; 
@@ -168,8 +171,8 @@ span#mobilefooter > img {
 	<span><img id="person" src="{{#icons_person}}{{{.}}}.svg{{/icons_person}}{{^icons_person}}./img/person.svg{{/icons_person}}"></span>
 	<span id="name">{{i18n.Hi}} {{#_org_monkshu_session}}username{{/_org_monkshu_session}}!</span>
 	</span>
-	{{#showrefresh}}<span id="refresh"><img id="refresh" src="{{#icons_refresh}}{{{.}}}.svg{{/icons_refresh}}{{^icons_refresh}}./img/reload.svg{{/icons_refresh}}" 
-		onclick="location.reload()"></span>{{/showrefresh}}
+	<span id="refresh"><img id="refresh" src="{{#icons_refresh}}{{{.}}}.svg{{/icons_refresh}}{{^icons_refresh}}./img/reload.svg{{/icons_refresh}}" 
+		onclick="monkshu_env.apps[APP_CONSTANTS.APP_NAME].neuranetapp.openView()"></span>
 	{{#shownotifications}}<span id="notifications"><img src="./img/bell.svg" onclick="monkshu_env.apps[APP_CONSTANTS.APP_NAME].main.showNotifications('{{{action}}}', event)"></span>{{/shownotifications}}
 	<span id="signoff"><img id="logoff" src="./img/poweroff.svg" onclick="monkshu_env.apps[APP_CONSTANTS.APP_NAME].main.logoutClicked()"></span>
 	</span>
@@ -178,10 +181,13 @@ span#mobilefooter > img {
 <div id="maincontent">
 	{{{maincontent}}}
 </div>
+{{#showSidebar}}
+  <chat-history-sidebar></chat-history-sidebar>
+{{/showSidebar}}
 
 <span id="mobilefooter">
 	<img src="./img/mobilefooter_home.svg" onclick="monkshu_env.apps[APP_CONSTANTS.APP_NAME].main.gohome()">
-	{{#showrefresh}}<img src="{{#icons_refresh}}{{{.}}}_mobile.svg{{/icons_refresh}}{{^icons_refresh}}./img/mobilefooter_reload.svg{{/icons_refresh}}" onclick="location.reload()">{{/showrefresh}}
+	{{#showrefresh}}<img src="{{#icons_refresh}}{{{.}}}_mobile.svg{{/icons_refresh}}{{^icons_refresh}}./img/mobilefooter_reload.svg{{/icons_refresh}}" onclick="monkshu_env.apps[APP_CONSTANTS.APP_NAME].neuranetapp.openView('{{{viewid}}}')">{{/showrefresh}}
 	{{#shownotifications}}<img class="headerimg" src="./img/mobilefooter_bell.svg" onclick="monkshu_env.apps[APP_CONSTANTS.APP_NAME].main.showNotifications('{{{action}}}', event, true)">{{/shownotifications}}
 	<img src="./img/mobilefooter_logout.svg" onclick="monkshu_env.apps[APP_CONSTANTS.APP_NAME].main.logoutClicked()">
 </span>

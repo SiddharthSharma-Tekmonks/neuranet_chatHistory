@@ -72,51 +72,75 @@ exports.doService = async (jsonReq, _servObject, _headers, _url) => {
     }
 
     // Append JSON line to NDJSON file
-    await fsp.appendFile(
-      filePath,
-      JSON.stringify(msgObj) + "\n",
-      { encoding: "utf8", mode: 0o600 }
-    );
+    let messageAppended = false;
+    try {
+      await fsp.appendFile(
+        filePath,
+        JSON.stringify(msgObj) + "\n",
+        { encoding: "utf8", mode: 0o600 }
+      );
+      messageAppended = true;
+      LOG.debug(`chatArchiveAppender: message appended to ${filePath}`);
+    } catch (appendErr) {
+      LOG.error(`chatArchiveAppender: failed to append message to ${filePath}: ${appendErr?.message}`);
+      throw appendErr;
+    }
 
     /**
      * ---- Update metadata record (stored in chat_meta.json) ----
      */
-    const metaDB = await loadMetaDB(META_DB_FILE);
-    const existingMetadata = metaDB[safeName] || null;
+    try {
+      const metaDB = await loadMetaDB(META_DB_FILE);
+      const existingMetadata = metaDB[safeName] || null;
 
-    const metaRecord = existingMetadata ? { ...existingMetadata } : {
-      chat_filename: safeName,
-      created_on: nowISO,                              // new record initialization
-      title: buildTitleFromMessage(message),           // auto-generate title from first message
-      ai_app: ai_app || null,
-      chatsession_id: chatsession_id ?? null
-    };
+      const metaRecord = existingMetadata ? { ...existingMetadata } : {
+        chat_filename: safeName,
+        created_on: nowISO,                              // new record initialization
+        title: buildTitleFromMessage(message),           // auto-generate title from first message
+        ai_app: ai_app || null,
+        chatsession_id: chatsession_id ?? null
+      };
 
-    // Always refresh last_updated_on
-    metaRecord.last_updated_on = nowISO;
+      // Always refresh last_updated_on
+      metaRecord.last_updated_on = nowISO;
 
-    // Backfill fields if provided later (fixes partial creation cases)
-    if (!metaRecord.ai_app && ai_app) metaRecord.ai_app = ai_app;
-    if (metaRecord.chatsession_id == null && chatsession_id != null)
-      metaRecord.chatsession_id = chatsession_id;
+      // Backfill fields if provided later (fixes partial creation cases)
+      if (!metaRecord.ai_app && ai_app) metaRecord.ai_app = ai_app;
+      if (metaRecord.chatsession_id == null && chatsession_id != null)
+        metaRecord.chatsession_id = chatsession_id;
 
-    // If title was blank and message exists, regenerate a title
-    if ((!metaRecord.title || !String(metaRecord.title).trim()) && message) {
-      metaRecord.title = buildTitleFromMessage(message);
+      // If title was blank and message exists, regenerate a title
+      if ((!metaRecord.title || !String(metaRecord.title).trim()) && message) {
+        metaRecord.title = buildTitleFromMessage(message);
+      }
+
+      // Persist metadata atomically
+      metaDB[safeName] = metaRecord;
+      await saveMetaDBAtomic(META_DB_FILE, metaDB);
+
+      LOG.info(`chatArchiveAppender: wrote message to ${filePath}; meta updated (newFile=${isNewFile})`);
+
+      return {
+        result: true,
+        filepath: filePath,
+        descriptorAdded: false,  // descriptor is added only when reading history
+        metaUpdated: true
+      };
+
+    } catch (metaErr) {
+      // ROLLBACK: Remove appended message if metadata update failed
+      if (messageAppended) {
+        try {
+          LOG.warn(`chatArchiveAppender: metadata update failed, rolling back message append: ${metaErr?.message}`);
+          await _removeLastLine(filePath);
+          LOG.info(`chatArchiveAppender: successfully rolled back message append`);
+        } catch (rollbackErr) {
+          LOG.error(`chatArchiveAppender: CRITICAL - failed to rollback message append: ${rollbackErr?.message}`);
+          LOG.error(`chatArchiveAppender: File ${filePath} may be in inconsistent state`);
+        }
+      }
+      throw metaErr;
     }
-
-    // Persist metadata atomically
-    metaDB[safeName] = metaRecord;
-    await saveMetaDBAtomic(META_DB_FILE, metaDB);
-
-    LOG.info(`chatArchiveAppender: wrote message to ${filePath}; meta updated (newFile=${isNewFile})`);
-
-    return {
-      result: true,
-      filepath: filePath,
-      descriptorAdded: false,  // descriptor is added only when reading history
-      metaUpdated: true
-    };
 
   } catch (err) {
     LOG.error(`chatArchiveAppender: execution error: ${err?.stack || err}`);
@@ -186,4 +210,37 @@ async function saveMetaDBAtomic(file, obj) {
   const tmp = file + ".tmp";
   await fsp.writeFile(tmp, JSON.stringify(obj, null, 2), { encoding: "utf8", mode: 0o600 });
   await fsp.rename(tmp, file);
+}
+
+/**
+ * Remove the last line from an NDJSON file (for rollback on error)
+ * Used when message append succeeds but metadata update fails
+ */
+async function _removeLastLine(filePath) {
+  try {
+    const content = await fsp.readFile(filePath, "utf8");
+    const lines = content.split("\n");
+
+    // Remove last line (which is empty after split) and the actual last message
+    if (lines.length > 1) {
+      lines.pop(); // Remove empty string at end from final \n
+    }
+    if (lines.length > 0) {
+      lines.pop(); // Remove the last message
+    }
+
+    // Write back without the last message
+    const newContent = lines.join("\n");
+    if (lines.length > 0) {
+      // Ensure file ends with newline
+      await fsp.writeFile(filePath, newContent + "\n", { encoding: "utf8", mode: 0o600 });
+    } else {
+      // If no messages left, truncate to empty
+      await fsp.writeFile(filePath, "", { encoding: "utf8", mode: 0o600 });
+    }
+
+  } catch (err) {
+    LOG.error(`_removeLastLine: failed to remove last line from ${filePath}: ${err?.message}`);
+    throw err;
+  }
 }

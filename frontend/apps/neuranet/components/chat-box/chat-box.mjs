@@ -214,7 +214,7 @@ async function preloadArchiveIfAny(containedElement) {
 
             if (next && nextMsg && nextRole === "assistant") {
                 // Fill in the AI response in the same insertion div
-                await _insertAIResponse(shadowRoot, nextMsg, next.mime || "text/markdown", message_id);
+                await _insertAIResponse(shadowRoot, nextMsg, next.mime || "text/markdown", message_id, true/*skipTypewriter*/);
 
                 // Display thoughts if available
                 if (next.thoughts) {
@@ -234,7 +234,7 @@ async function preloadArchiveIfAny(containedElement) {
             // No preceding user: create a new insertion with empty user section and AI response
             const message_id = `${Date.now()}${Math.floor(Math.random() * 1000) + 1}${i}`;
             _insertAIRequest(shadowRoot, userMessageArea, "(Assistant)", message_id);
-            await _insertAIResponse(shadowRoot, msg, curr.mime || "text/markdown", message_id);
+            await _insertAIResponse(shadowRoot, msg, curr.mime || "text/markdown", message_id, true/*skipTypewriter*/);
 
             // Display thoughts if available
             if (curr.thoughts) {
@@ -647,16 +647,16 @@ function _insertAIThoughts(shadowRoot, thoughts, thoughts_mime="text/markdown", 
     chatScroller.scrollTop = chatScroller.scrollHeight;
 }
 
-async function _insertAIResponse(shadowRoot, aiResponse, aiReponseMime="text/markdown", message_id=last_message_id) {
+async function _insertAIResponse(shadowRoot, aiResponse, aiReponseMime="text/markdown", message_id=last_message_id, skipTypewriter=false) {
     // insert current prompt and/or reply
     const insertion = shadowRoot.querySelector(`div.insertiondiv#c${message_id}`);
     if (!insertion) return;
     const chatScroller = shadowRoot.querySelector("div#chatscroller");
     const memory = chat_box.getMemoryByContainedElement(insertion), typewriter = memory.typewriter;
-    const elementAIResponse = insertion.querySelector("span.airesponse"); 
+    const elementAIResponse = insertion.querySelector("span.airesponse");
     const htmlContent = aiReponseMime=="text/markdown" ? _latexedMarkdownToHTML(aiResponse): aiResponse;
-    const insertionTemplate = shadowRoot.querySelector("template#chatresponse_insertion_template").content.cloneNode(true);   
-    if (typewriter) await _typewriterWriteText(elementAIResponse, htmlContent, chatScroller, typewriter); 
+    const insertionTemplate = shadowRoot.querySelector("template#chatresponse_insertion_template").content.cloneNode(true);
+    if (!skipTypewriter && typewriter) await _typewriterWriteText(elementAIResponse, htmlContent, chatScroller, typewriter);
     else elementAIResponse.innerHTML=htmlContent;
     elementAIResponse.innerHTML += insertionTemplate.querySelector("span.controls").outerHTML;
     elementAIResponse.dataset.content = `<!doctype html>\n${htmlContent}\n</html>`;

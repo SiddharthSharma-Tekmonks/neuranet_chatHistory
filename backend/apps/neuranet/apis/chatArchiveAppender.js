@@ -40,7 +40,7 @@ exports.doService = async (jsonReq, _servObject, _headers, _url) => {
   }
 
   // Extract request fields
-  const { role, message, chat_filename, ai_app, chatsession_id, files } = jsonReq;
+  const { role, message, chat_filename, ai_app, chatsession_id, files, thoughts, thoughts_mime } = jsonReq;
   const nowISO = new Date().toISOString();
 
   try {
@@ -69,6 +69,12 @@ exports.doService = async (jsonReq, _servObject, _headers, _url) => {
     // Include files metadata if provided (for user messages with attachments)
     if (files && Array.isArray(files) && files.length > 0) {
       msgObj.files = files;
+    }
+
+    // Include AI thoughts if provided (for assistant messages with reasoning)
+    if (thoughts && role === "assistant") {
+      msgObj.thoughts = String(thoughts);
+      msgObj.thoughts_mime = thoughts_mime || "text/markdown";
     }
 
     // Append JSON line to NDJSON file

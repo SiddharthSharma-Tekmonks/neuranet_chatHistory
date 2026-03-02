@@ -24,6 +24,7 @@ const COMPONENT_PATH = util.getModulePathFromURL(import.meta.url), DEFAULT_MAX_A
     DOWNLOAD_MSG_ON_HOVERING = "Download";
 
 let MUSTACHE, last_message_id;
+const MESSAGE_THOUGHTS_MAP = {};  // Store thoughts per message_id: { message_id: { thoughts, mime } }
 
 async function elementConnected(host) {
     const ATTACHMENT_ALLOWED = host.getAttribute("attach")?.toLowerCase() == "true";
@@ -105,7 +106,24 @@ async function send(containedElement) {
     const wrappedChatBox = {
         insertAIResponse: async (processedResult, msg_id=last_message_id) => {
             await _insertAIResponse(shadowRoot, processedResult[processedResult.ok?"response":"error"], processedResult.mime, msg_id);
-            const ai_message_history_request = { role: 'assistant', message: processedResult[processedResult.ok?"response":"error"], chat_filename: curr_filename, id, org, ai_app };
+
+            // Build history request with optional thoughts
+            const ai_message_history_request = {
+                role: 'assistant',
+                message: processedResult[processedResult.ok?"response":"error"],
+                chat_filename: curr_filename,
+                id,
+                org,
+                ai_app
+            };
+
+            // Include thoughts if they were captured for this message
+            if (MESSAGE_THOUGHTS_MAP[msg_id]) {
+                ai_message_history_request.thoughts = MESSAGE_THOUGHTS_MAP[msg_id].thoughts;
+                ai_message_history_request.thoughts_mime = MESSAGE_THOUGHTS_MAP[msg_id].mime;
+                delete MESSAGE_THOUGHTS_MAP[msg_id];  // Clean up after storing
+            }
+
             await apiman.rest(chatArchiveAppenderAPI, "POST", ai_message_history_request, true);
             await chat_history.refreshSidebarChats();
             if (!processedResult.ok) {
@@ -117,7 +135,12 @@ async function send(containedElement) {
                 userMessageArea.readOnly = false;
             }
         },
-        insertAIThoughts: (thoughts, thoughts_mime, msg_id=last_message_id) => _insertAIThoughts(shadowRoot, thoughts, thoughts_mime, msg_id),
+        insertAIThoughts: (thoughts, thoughts_mime, msg_id=last_message_id) => {
+            // Store thoughts for later inclusion in history
+            MESSAGE_THOUGHTS_MAP[msg_id] = { thoughts, mime: thoughts_mime || "text/markdown" };
+            // Also display them immediately
+            return _insertAIThoughts(shadowRoot, thoughts, thoughts_mime, msg_id);
+        },
         getCollapsibleSection: (title, content) => _getCollapsibleSection(containedElement, title, content),
         getAIContent: msg_id => _getAIResponseContent(shadowRoot, msg_id||last_message_id)||""
     };
@@ -127,20 +150,45 @@ async function send(containedElement) {
 
 /* === Preload archived chat into the chatbox === */
 async function preloadArchiveIfAny(containedElement) {
+    // Validate input
+    if (!containedElement) {
+        LOG.warn("preloadArchiveIfAny: containedElement is null/undefined");
+        return;
+    }
+
     const pre = session.get(APP_CONSTANTS.CHAT_HISTORY_CONVERSATION);
     if (!Array.isArray(pre) || !pre.length) return;
 
     // Clear it so we don't render twice on subsequent loads
     session.remove(APP_CONSTANTS.CHAT_HISTORY_CONVERSATION);
 
+    // Get shadow root and validate
     const shadowRoot = chat_box.getShadowRootByContainedElement(containedElement);
+    if (!shadowRoot) {
+        LOG.error("preloadArchiveIfAny: Failed to get shadowRoot from containedElement");
+        return;
+    }
+
+    // Get and validate required elements
     const userMessageArea = shadowRoot.querySelector("textarea#messagearea");
-    if (!shadowRoot || !userMessageArea) return;
+    if (!userMessageArea) {
+        LOG.error("preloadArchiveIfAny: textarea#messagearea not found in shadow DOM");
+        return;
+    }
+
+    // Get and validate chat elements
+    const chatStartDiv = shadowRoot.querySelector("div#start");
+    const chatScroller = shadowRoot.querySelector("div#chatscroller");
+    if (!chatScroller) {
+        LOG.error("preloadArchiveIfAny: div#chatscroller not found in shadow DOM");
+        return;
+    }
 
     // Make the chat area visible (same as send() does)
-    shadowRoot.querySelector("div#start")?.classList.replace("visible", "hidden");
-    const chatScroller = shadowRoot.querySelector("div#chatscroller");
-    chatScroller?.classList.replace("hidden", "visible");
+    if (chatStartDiv) {
+        chatStartDiv.classList.replace("visible", "hidden");
+    }
+    chatScroller.classList.replace("hidden", "visible");
 
     // Walk through objects and render
     let i = 0;
@@ -167,6 +215,12 @@ async function preloadArchiveIfAny(containedElement) {
             if (next && nextMsg && nextRole === "assistant") {
                 // Fill in the AI response in the same insertion div
                 await _insertAIResponse(shadowRoot, nextMsg, next.mime || "text/markdown", message_id);
+
+                // Display thoughts if available
+                if (next.thoughts) {
+                    _insertAIThoughts(shadowRoot, next.thoughts, next.thoughts_mime || "text/markdown", message_id);
+                }
+
                 i += 2;
                 continue;
             }
@@ -181,6 +235,12 @@ async function preloadArchiveIfAny(containedElement) {
             const message_id = `${Date.now()}${Math.floor(Math.random() * 1000) + 1}${i}`;
             _insertAIRequest(shadowRoot, userMessageArea, "(Assistant)", message_id);
             await _insertAIResponse(shadowRoot, msg, curr.mime || "text/markdown", message_id);
+
+            // Display thoughts if available
+            if (curr.thoughts) {
+                _insertAIThoughts(shadowRoot, curr.thoughts, curr.thoughts_mime || "text/markdown", message_id);
+            }
+
             i += 1;
             continue;
         }
@@ -406,24 +466,89 @@ async function saveAsWord(elementAIResponse) {
 }
 
 function _getCollapsibleSection(shadowRoot, title, content) {
-    const insertionTemplate = shadowRoot.querySelector("template#collapsible_content_template").innerHTML;   
+    // Validate inputs
+    if (!shadowRoot) {
+        LOG.error("_getCollapsibleSection: shadowRoot is null/undefined");
+        return "";
+    }
+    if (!title) title = "";
+    if (!content) content = "";
+
+    const templateEl = shadowRoot.querySelector("template#collapsible_content_template");
+    if (!templateEl) {
+        LOG.error("_getCollapsibleSection: template#collapsible_content_template not found");
+        return "";
+    }
+
+    const insertionTemplate = templateEl.innerHTML;
     const rendered = MUSTACHE.render(insertionTemplate, {title, content});
     return rendered;
 }
 
 function _detachAllFiles(shadowRoot, clearAttachedFileMemory) {
+    // Validate shadowRoot
+    if (!shadowRoot) {
+        LOG.warn("_detachAllFiles: shadowRoot is null/undefined");
+        return;
+    }
+
     const containedElement = shadowRoot.querySelector("div#body");
-    if (clearAttachedFileMemory) {const memory = _getMemory(containedElement); memory.FILES_ATTACHED = [];}
+    if (clearAttachedFileMemory && containedElement) {
+        const memory = _getMemory(containedElement);
+        if (memory) {
+            memory.FILES_ATTACHED = [];
+        }
+    }
+
     const insertionNode = shadowRoot.querySelector("span#attachedfiles");
-    while (insertionNode.firstChild) insertionNode.removeChild(insertionNode.firstChild);
+    if (!insertionNode) {
+        LOG.warn("_detachAllFiles: span#attachedfiles not found");
+        return;
+    }
+
+    while (insertionNode.firstChild) {
+        insertionNode.removeChild(insertionNode.firstChild);
+    }
 }
 
 function _insertAIRequest(shadowRoot, userMessageArea, userPrompt, message_id) {
-    const insertionTemplate = shadowRoot.querySelector("template#chatresponse_insertion_template").content.cloneNode(true);   
-    const insertion = insertionTemplate.querySelector("div.insertiondiv"); insertion.id = `c${message_id}`; 
+    // Validate inputs
+    if (!shadowRoot) {
+        LOG.error("_insertAIRequest: shadowRoot is null/undefined");
+        return;
+    }
+    if (!userMessageArea) {
+        LOG.error("_insertAIRequest: userMessageArea is null/undefined");
+        return;
+    }
+    if (!message_id) {
+        LOG.error("_insertAIRequest: message_id is null/undefined");
+        return;
+    }
+
+    const insertionTemplate = shadowRoot.querySelector("template#chatresponse_insertion_template");
+    if (!insertionTemplate) {
+        LOG.error("_insertAIRequest: template#chatresponse_insertion_template not found");
+        return;
+    }
+
+    const templateContent = insertionTemplate.content.cloneNode(true);
+    const insertion = templateContent.querySelector("div.insertiondiv");
+    if (!insertion) {
+        LOG.error("_insertAIRequest: div.insertiondiv not found in template");
+        return;
+    }
+
+    insertion.id = `c${message_id}`;
     const elementUserprompt = insertion.querySelector("span.userprompt");
-    const memory = chat_box.getMemoryByContainedElement(shadowRoot.querySelector("div#body"));
-    const attachedFiles = memory.FILES_ATTACHED || [];
+    if (!elementUserprompt) {
+        LOG.error("_insertAIRequest: span.userprompt not found in template");
+        return;
+    }
+
+    const bodyDiv = shadowRoot.querySelector("div#body");
+    const memory = bodyDiv ? chat_box.getMemoryByContainedElement(bodyDiv) : null;
+    const attachedFiles = memory?.FILES_ATTACHED || [];
     elementUserprompt.textContent = userPrompt;
     if (attachedFiles.length > 0) {
         const filesDiv = document.createElement("div"); filesDiv.className = "user-files";
@@ -443,16 +568,27 @@ function _insertAIRequest(shadowRoot, userMessageArea, userPrompt, message_id) {
         }
         elementUserprompt.appendChild(filesDiv);
     }
-    shadowRoot.querySelector("div#chatmainarea").appendChild(insertion);
+    // Append insertion to chat area
+    const chatMainArea = shadowRoot.querySelector("div#chatmainarea");
+    if (!chatMainArea) {
+        LOG.error("_insertAIRequest: div#chatmainarea not found");
+        return;
+    }
+    chatMainArea.appendChild(insertion);
 
-    // scroll to the bottom
+    // Scroll to the bottom
     const chatScroller = shadowRoot.querySelector("div#chatscroller");
+    if (!chatScroller) {
+        LOG.error("_insertAIRequest: div#chatscroller not found");
+        return;
+    }
     chatScroller.scrollTop = chatScroller.scrollHeight;
 
-    // hide the startup logo and messages and switch to chat if this is the first message
-    if (shadowRoot.querySelector("div#start").classList.contains("visible")) {   
-        shadowRoot.querySelector("div#start").classList.replace("visible", "hidden");
-        chatScroller.classList.replace("hidden", "visible");  
+    // Hide the startup logo and messages and switch to chat if this is the first message
+    const startDiv = shadowRoot.querySelector("div#start");
+    if (startDiv && startDiv.classList.contains("visible")) {
+        startDiv.classList.replace("visible", "hidden");
+        chatScroller.classList.replace("hidden", "visible");
     }
     
     // clear the message area and attached files to prepare for the next message

@@ -199,7 +199,7 @@ async function startVoiceInput(containedElement) {
     const shadowRoot = chat_box.getShadowRootByContainedElement(containedElement);
     const textarea = shadowRoot.querySelector("textarea#messagearea");
     const micButton = shadowRoot.querySelector("img#mic");
-    const disMessage = shadowRoot.querySelector("div#message");
+    const divMessage = shadowRoot.querySelector("div#message");
     const host = chat_box.getHostElement(containedElement);
 
     const sttAPI = `${APP_CONSTANTS.API_PATH}/voiceTools`;
@@ -209,14 +209,14 @@ async function startVoiceInput(containedElement) {
 
     const showSpinner = () => {
         textarea.readOnly = true;
-        disMessage.classList.add("disabled");
+        divMessage.classList.add("disabled");
         micButton.dataset.originalSrc = micButton.src;
         micButton.src = `${COMPONENT_PATH}/img/spinner.svg`;
         micButton.classList.add("rotating");
     };
     const restoreMic = () => {
         textarea.readOnly = false;
-        disMessage.classList.remove("disabled");
+        divMessage.classList.remove("disabled");
         micButton.src = micButton.dataset.originalSrc;
         micButton.classList.remove("rotating");
     };

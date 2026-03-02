@@ -115,7 +115,7 @@ async function _fetchSidebarChats() {
   const org = session.get(APP_CONSTANTS.USERORG);
   const ai_app = session.get(APP_CONSTANTS.FORCE_LOAD_VIEW);
   const orgid = `_${org}_${id}`;
-  const filenamePattern = orgid.replace(/@/g, "_");
+  const filenamePattern = orgid.replace(/@/g, "_").replace(/\s+/g, "_");
 
   const sendChatArchiveListAPI = `${APP_CONSTANTS.API_PATH}/sendChatArchiveList`;
   const req = { pattern: filenamePattern, caseInsensitive: false, service: "listTimestamps", ai_app, id, org };

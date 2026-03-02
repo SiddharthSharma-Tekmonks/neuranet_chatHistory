@@ -91,14 +91,14 @@ async function send(containedElement) {
         user_message_history_request.files = attachedFiles.map(f => ({ filename: f.filename, fileid: f.fileid }));
     }
 
-    apiman.rest(chatArchiveAppenderAPI, "POST", user_message_history_request, true);
+    await apiman.rest(chatArchiveAppenderAPI, "POST", user_message_history_request, true);
 
     const onRequest = host.getAttribute("onrequest");
     const wrappedChatBox = {
         insertAIResponse: async (processedResult, msg_id=last_message_id) => {
             await _insertAIResponse(shadowRoot, processedResult[processedResult.ok?"response":"error"], processedResult.mime, msg_id);
             const ai_message_history_request = { role: 'assistant', message: processedResult[processedResult.ok?"response":"error"], chat_filename: curr_filename, id, org, ai_app };
-            apiman.rest(chatArchiveAppenderAPI, "POST", ai_message_history_request, true);
+            await apiman.rest(chatArchiveAppenderAPI, "POST", ai_message_history_request, true);
             await chat_history.refreshSidebarChats();
             if (!processedResult.ok) {
                 buttonSendImg.onclick = ''; buttonSendImg.src = `${COMPONENT_PATH}/img/senddisabled.svg`;

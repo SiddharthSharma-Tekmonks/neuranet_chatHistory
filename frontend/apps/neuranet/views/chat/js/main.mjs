@@ -38,14 +38,8 @@ async function initView(data) {
 }
 
 async function getAssistantResult(question, files, message_id, chatbox, aiappid, poll) {
-    // Upload files if provided
-    let uploadedFileReferences = [];
-    if (files && files.length > 0) {
-        uploadedFileReferences = await _uploadFiles(files, message_id);
-    }
-
     const request = {id: session.get(APP_CONSTANTS.USERID).toString(), org: session.get(APP_CONSTANTS.USERORG).toString(),
-        question, session_id: chatsessionID, aiappid, files: uploadedFileReferences, message_id, jobrequest: poll};
+        question, session_id: chatsessionID, aiappid, files, message_id, jobrequest: poll};
     thoughtSubscribers[message_id] = async thoughts =>  // update chat with thoughts of the model while producing the final response
         chatbox.insertAIThoughts(thoughts.join("\n\n"), "text/markdown", message_id);
 
@@ -110,58 +104,6 @@ function _newThoughtsDetected(oldThoughts, newThoughts) {
     for (const [message_id, thoughts] of Object.entries(newThoughts))
         if (oldThoughts[message_id]?.sort().join(",") != thoughts.sort().join(",")) // this checks members are equal in the two arrays
             if (thoughtSubscribers[message_id]) thoughtSubscribers[message_id](thoughts);
-}
-
-/**
- * Upload files to the backend for storage
- * @param {Array} files - Array of file objects with {filename, bytes64, fileid}
- * @param {string} message_id - The message ID to associate with files
- * @returns {Promise<Array>} Array of uploaded file references
- */
-async function _uploadFiles(files, message_id) {
-    const uploadedFiles = [];
-    const uploadAPI = `${APP_CONSTANTS.API_PATH}/uploadChatFile`;
-    const chatFilename = session.get(APP_CONSTANTS.CHAT_FILENAME) || `chat_${message_id}`;
-
-    LOG.info(`Starting file upload for ${files.length} files to ${uploadAPI}`);
-
-    for (const fileObj of files) {
-        try {
-            LOG.info(`Uploading file: ${fileObj.filename}`);
-
-            // Prepare file data for upload
-            const uploadRequest = {
-                id: session.get(APP_CONSTANTS.USERID).toString(),
-                org: session.get(APP_CONSTANTS.USERORG).toString(),
-                chat_filename: chatFilename,
-                file_data: fileObj.bytes64,  // Send base64 encoded
-                filename: fileObj.filename
-            };
-
-            LOG.info(`Sending upload request for ${fileObj.filename}...`);
-
-            // Upload file using apiman (consistent with other API calls)
-            const result = await apiman.rest(uploadAPI, "POST", uploadRequest, true);
-
-            if (result?.result) {
-                LOG.info(`File ${fileObj.filename} uploaded successfully`);
-                uploadedFiles.push({
-                    filename: result.stored_filename,
-                    path: result.stored_abs_path,
-                    mime_type: result.mime_type,
-                    size: result.size
-                });
-            } else {
-                LOG.error(`File upload failed for ${fileObj.filename}: ${result?.reason || 'Unknown error'}`);
-            }
-        } catch (err) {
-            LOG.error(`File upload exception for ${fileObj.filename}: ${err?.message || err}`);
-            console.error(err);
-        }
-    }
-
-    LOG.info(`File upload complete. Uploaded ${uploadedFiles.length}/${files.length} files`);
-    return uploadedFiles;
 }
 
 export const main = {initView, getAssistantResult};

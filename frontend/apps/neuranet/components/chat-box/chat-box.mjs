@@ -86,9 +86,17 @@ async function send(containedElement) {
     const attachedFiles = _getMemory(containedElement).FILES_ATTACHED;
     const user_message_history_request = { role: 'user', message: userPrompt, chat_filename: curr_filename, id, org, ai_app, chatsession_id };
 
-    // Include file metadata if files are attached
+    // Upload files and store server references in the archive
     if (attachedFiles && attachedFiles.length > 0) {
-        user_message_history_request.files = attachedFiles.map(f => ({ filename: f.filename, fileid: f.fileid }));
+        const uploadAPI = `${APP_CONSTANTS.API_PATH}/uploadChatFile`;
+        const uploadedRefs = await Promise.all(attachedFiles.map(async f => {
+            const res = await apiman.rest(uploadAPI, "POST",
+                {id, org, chat_filename: curr_filename, filename: f.filename, file_data: f.bytes64}, true);
+            return res?.result
+                ? {filename: f.filename, fileid: f.fileid, stored_filename: res.stored_filename, stored_abs_path: res.stored_abs_path, mime_type: res.mime_type, size: res.size}
+                : {filename: f.filename, fileid: f.fileid};
+        }));
+        user_message_history_request.files = uploadedRefs;
     }
 
     await apiman.rest(chatArchiveAppenderAPI, "POST", user_message_history_request, true);

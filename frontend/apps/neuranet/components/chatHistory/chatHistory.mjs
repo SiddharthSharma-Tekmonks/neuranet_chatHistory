@@ -54,12 +54,8 @@ function _mapChats(historyItems) {
     .sort((a,b)=> (b.ts||"") > (a.ts||"") ? 1 : ((b.ts||"") < (a.ts||"") ? -1 : 0));
 }
 
-/* Build payload for readAll */
-function buildChatReadAllPayload(chat_filename) {
-  const id = session.get(APP_CONSTANTS.USERID);
-  const org = session.get(APP_CONSTANTS.USERORG);
-  return { service: "readAll", chat_filename: String(chat_filename || "").trim(), id, org };
-}
+/* Shared session auth fields */
+const _getSessionAuth = () => ({ id: session.get(APP_CONSTANTS.USERID), org: session.get(APP_CONSTANTS.USERORG) });
 
 /* ----- Globals for edit modal ----- */
 const state = {
@@ -82,9 +78,8 @@ function bindChatHistoryHandler() {
         document.body.classList.remove("sb-open");
       }
 
-      const api = `${APP_CONSTANTS.API_PATH}/sendChatHistory`;
-      const payload = buildChatReadAllPayload(file);
-      const result = await apiman.rest(api, "POST", payload, true);
+      const payload = { service: "readAll", chat_filename: String(file || "").trim(), ..._getSessionAuth() };
+      const result = await apiman.rest(`${APP_CONSTANTS.API_PATH}/chatArchiveReader`, "POST", payload, true);
 
       if (result?.result && Array.isArray(result.objects)) {
         const ai_app   = result.objects[0]?.ai_app;
@@ -104,23 +99,20 @@ function bindChatHistoryHandler() {
         console.warn("readAll failed or unexpected response:", { payload, result });
       }
     } catch (err) {
-      console.error("sendChatHistory/readAll error:", err);
+      console.error("chatArchiveReader/readAll error:", err);
     }
   };
 }
 
 /* ----- Fetch & render list ----- */
 async function _fetchSidebarChats() {
-  const id  = session.get(APP_CONSTANTS.USERID);
-  const org = session.get(APP_CONSTANTS.USERORG);
+  const { id, org } = _getSessionAuth();
   const ai_app = session.get(APP_CONSTANTS.FORCE_LOAD_VIEW);
   const orgid = `_${org}_${id}`;
   const filenamePattern = orgid.replace(/@/g, "_").replace(/\s+/g, "_");
 
-  const sendChatArchiveListAPI = `${APP_CONSTANTS.API_PATH}/sendChatArchiveList`;
-  const req = { pattern: filenamePattern, caseInsensitive: false, service: "listTimestamps", ai_app, id, org };
-
-  const res = await apiman.rest(sendChatArchiveListAPI, "POST", req, true);
+  const req = { service: "listTimestamps", pattern: filenamePattern, caseInsensitive: false, ai_app, ..._getSessionAuth() };
+  const res = await apiman.rest(`${APP_CONSTANTS.API_PATH}/chatArchiveReader`, "POST", req, true);
   const normalized = _normalizeHistoryResult(res);
   return _mapChats(normalized);
 }
@@ -171,6 +163,12 @@ window.__refreshSidebar = refreshSidebarChats;
 /* ===== Utilities ===== */
 function escapeHTML(s) {
   return String(s ?? "").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+/* Shared helper for updateChatArchive calls */
+async function _callUpdateArchive(service, extra = {}) {
+  const body = { service, ai_app: session.get(APP_CONSTANTS.FORCE_LOAD_VIEW), ..._getSessionAuth(), ...extra };
+  return apiman.rest(`${APP_CONSTANTS.API_PATH}/updateChatArchive`, "POST", body, true);
 }
 
 /* ===== Element lifecycle ===== */
@@ -320,23 +318,11 @@ async function elementRendered(host) {
   }
 
   async function _saveRename() {
-
-    const id  = session.get(APP_CONSTANTS.USERID);
-    const org = session.get(APP_CONSTANTS.USERORG);
     const chat_filename = state.editTarget?.chat_filename;
     const newTitle = String(titleInput.value || "").trim().slice(0, 40);
     if (!chat_filename || !newTitle) return;
 
-    const api = `${APP_CONSTANTS.API_PATH}/updateChatArchive`;
-    const body = {
-      service: "updateTitle",
-      chat_filename,
-      ai_app: session.get(APP_CONSTANTS.FORCE_LOAD_VIEW),
-      title: newTitle,
-      id,
-      org
-    };
-    const res = await apiman.rest(api, "POST", body, true);
+    const res = await _callUpdateArchive("updateTitle", { chat_filename, title: newTitle });
     if (!res?.result) {
       alert("Failed to update title");
       return;
@@ -346,19 +332,8 @@ async function elementRendered(host) {
   }
 
   async function _confirmDelete(chat_filename) {
-
-    const id  = session.get(APP_CONSTANTS.USERID);
-    const org = session.get(APP_CONSTANTS.USERORG);
-    const api = `${APP_CONSTANTS.API_PATH}/updateChatArchive`;
-    const body = {
-      service: "delete",
-      chat_filename,
-      ai_app: session.get(APP_CONSTANTS.FORCE_LOAD_VIEW),
-      id,
-      org
-    };
-    let current_chat=session.get(APP_CONSTANTS.CHAT_FILENAME).native.replace(/@/g, "_");
-    const res = await apiman.rest(api, "POST", body, true);
+    let current_chat = session.get(APP_CONSTANTS.CHAT_FILENAME).native.replace(/@/g, "_");
+    const res = await _callUpdateArchive("delete", { chat_filename });
     if (!res?.result) {
       alert("Failed to delete chat");
       return;

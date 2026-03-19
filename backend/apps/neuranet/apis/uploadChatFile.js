@@ -1,8 +1,8 @@
 // uploadChatFile.js
 const path = require("path");
-const fs = require("fs");
-const fsp = require("fs/promises");
+const fsp  = require("fs/promises");
 const neuranetConstants = require("../lib/neuranetconstants.js");
+const { ensureDir } = require("./chatArchiveUtils");
 
 const LOG = global.LOG || console;
 
@@ -168,10 +168,6 @@ function validateUploadRequest(req) {
     // Will check for _servObject.files later
   }
   return true;
-}
-
-async function ensureDir(dir) {
-  await fsp.mkdir(dir, { recursive: true, mode: 0o700 });
 }
 
 /**

@@ -59,7 +59,7 @@ async function send(containedElement) {
     const userMessageArea = shadowRoot.querySelector("textarea#messagearea"), userPrompt = userMessageArea.value.trim();
     if (userPrompt == "") return;    // empty prompt, ignore
 
-    const chatArchiveAppenderAPI = `${APP_CONSTANTS.API_PATH}/chatArchiveAppender`;
+    const chatArchiveAPI = `${APP_CONSTANTS.API_PATH}/chatArchive`;
     const id = session.get(APP_CONSTANTS.USERID);
     const org = session.get(APP_CONSTANTS.USERORG);
     const ai_app = session.get(APP_CONSTANTS.FORCE_LOAD_VIEW);
@@ -85,22 +85,16 @@ async function send(containedElement) {
 
     const chatsession_id = session.get(APP_CONSTANTS.CHAT_SESSION_ID);
     const attachedFiles = _getMemory(containedElement).FILES_ATTACHED;
-    const user_message_history_request = { role: 'user', message: userPrompt, chat_filename: curr_filename, id, org, ai_app, chatsession_id };
+    const user_message_history_request = { service: "appendMessage", role: 'user', message: userPrompt, chat_filename: curr_filename, id, org, ai_app, chatsession_id };
 
-    // Upload files and store server references in the archive
+    // Embed attached files in the request; backend uploads and stores refs atomically
     if (attachedFiles && attachedFiles.length > 0) {
-        const uploadAPI = `${APP_CONSTANTS.API_PATH}/uploadChatFile`;
-        const uploadedRefs = await Promise.all(attachedFiles.map(async f => {
-            const res = await apiman.rest(uploadAPI, "POST",
-                {id, org, chat_filename: curr_filename, filename: f.filename, file_data: f.bytes64}, true);
-            return res?.result
-                ? {filename: f.filename, fileid: f.fileid, stored_filename: res.stored_filename, stored_abs_path: res.stored_abs_path, mime_type: res.mime_type, size: res.size}
-                : {filename: f.filename, fileid: f.fileid};
-        }));
-        user_message_history_request.files = uploadedRefs;
+        user_message_history_request.attached_files = attachedFiles.map(f => (
+            {filename: f.filename, fileid: f.fileid, file_data: f.bytes64}
+        ));
     }
 
-    await apiman.rest(chatArchiveAppenderAPI, "POST", user_message_history_request, true);
+    await apiman.rest(chatArchiveAPI, "POST", user_message_history_request, true);
 
     const onRequest = host.getAttribute("onrequest");
     const wrappedChatBox = {
@@ -109,6 +103,7 @@ async function send(containedElement) {
 
             // Build history request with optional thoughts
             const ai_message_history_request = {
+                service: "appendMessage",
                 role: 'assistant',
                 message: processedResult[processedResult.ok?"response":"error"],
                 chat_filename: curr_filename,
@@ -124,7 +119,7 @@ async function send(containedElement) {
                 delete MESSAGE_THOUGHTS_MAP[msg_id];  // Clean up after storing
             }
 
-            await apiman.rest(chatArchiveAppenderAPI, "POST", ai_message_history_request, true);
+            await apiman.rest(chatArchiveAPI, "POST", ai_message_history_request, true);
             await chat_history.refreshSidebarChats();
             if (!processedResult.ok) {
                 buttonSendImg.onclick = ''; buttonSendImg.src = `${COMPONENT_PATH}/img/senddisabled.svg`;

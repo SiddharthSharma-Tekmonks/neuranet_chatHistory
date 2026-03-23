@@ -1,6 +1,6 @@
 /**
  * @module chat-history-sidebar
- * Adds per-row "..." menu with rename (40-char) + delete via updateChatArchive API.
+ * Adds per-row "..." menu with rename (40-char) + delete via chatArchive API.
  */
 
 import {util} from "/framework/js/util.mjs";
@@ -79,7 +79,7 @@ function bindChatHistoryHandler() {
       }
 
       const payload = { service: "readAll", chat_filename: String(file || "").trim(), ..._getSessionAuth() };
-      const result = await apiman.rest(`${APP_CONSTANTS.API_PATH}/chatArchiveReader`, "POST", payload, true);
+      const result = await apiman.rest(`${APP_CONSTANTS.API_PATH}/chatArchive`, "POST", payload, true);
 
       if (result?.result && Array.isArray(result.objects)) {
         const ai_app   = result.objects[0]?.ai_app;
@@ -99,7 +99,7 @@ function bindChatHistoryHandler() {
         console.warn("readAll failed or unexpected response:", { payload, result });
       }
     } catch (err) {
-      console.error("chatArchiveReader/readAll error:", err);
+      console.error("chatArchive/readAll error:", err);
     }
   };
 }
@@ -112,7 +112,7 @@ async function _fetchSidebarChats() {
   const filenamePattern = orgid.replace(/@/g, "_").replace(/\s+/g, "_");
 
   const req = { service: "listTimestamps", pattern: filenamePattern, caseInsensitive: false, ai_app, ..._getSessionAuth() };
-  const res = await apiman.rest(`${APP_CONSTANTS.API_PATH}/chatArchiveReader`, "POST", req, true);
+  const res = await apiman.rest(`${APP_CONSTANTS.API_PATH}/chatArchive`, "POST", req, true);
   const normalized = _normalizeHistoryResult(res);
   return _mapChats(normalized);
 }
@@ -165,10 +165,10 @@ function escapeHTML(s) {
   return String(s ?? "").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 }
 
-/* Shared helper for updateChatArchive calls */
+/* Shared helper for chatArchive update/delete calls */
 async function _callUpdateArchive(service, extra = {}) {
   const body = { service, ai_app: session.get(APP_CONSTANTS.FORCE_LOAD_VIEW), ..._getSessionAuth(), ...extra };
-  return apiman.rest(`${APP_CONSTANTS.API_PATH}/updateChatArchive`, "POST", body, true);
+  return apiman.rest(`${APP_CONSTANTS.API_PATH}/chatArchive`, "POST", body, true);
 }
 
 /* ===== Element lifecycle ===== */
@@ -333,7 +333,7 @@ async function elementRendered(host) {
 
   async function _confirmDelete(chat_filename) {
     let current_chat = session.get(APP_CONSTANTS.CHAT_FILENAME).native.replace(/@/g, "_");
-    const res = await _callUpdateArchive("delete", { chat_filename });
+    const res = await _callUpdateArchive("deleteChat", { chat_filename });
     if (!res?.result) {
       alert("Failed to delete chat");
       return;

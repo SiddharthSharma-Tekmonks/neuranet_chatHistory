@@ -3,8 +3,8 @@
  * @description Library for all chat archive operations.
  *
  * Exported handlers (called by apis/chatArchive.js):
- *   readAll(jsonReq)           — load full chat session from NDJSON file
- *   listTimestamps(jsonReq)    — list saved chats with metadata for sidebar
+ *   loadChat(jsonReq)           — load full chat session from NDJSON file
+ *   listChatsMetadata(jsonReq)    — list saved chats with metadata for sidebar
  *   appendMessage(jsonReq)     — append a user/assistant message; if jsonReq.attached_files
  *                                is present, uploads each file first then stores refs in the message
  *   updateTitle(jsonReq)       — rename a chat session
@@ -35,13 +35,13 @@ const REASONS = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Handler: readAll
+// Handler: loadChat
 // Load a complete chat session (descriptor + messages) from an NDJSON file.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-async function readAll(jsonReq) {
+async function loadChat(jsonReq) {
   if (!jsonReq?.chat_filename || typeof jsonReq.chat_filename !== "string") {
-    LOG.error(`chatArchive/readAll: validation failed for ${JSON.stringify(jsonReq)}`);
+    LOG.error(`chatArchive/loadChat: validation failed for ${JSON.stringify(jsonReq)}`);
     return { result: false, reason: REASONS.VALIDATION };
   }
 
@@ -71,23 +71,23 @@ async function readAll(jsonReq) {
     return { result: true, filepath: chatFilePath, objects: combined, count: combined.length };
 
   } catch (err) {
-    LOG.error(`chatArchive/readAll: ${err?.stack || err}`);
+    LOG.error(`chatArchive/loadChat: ${err?.stack || err}`);
     return { result: false, reason: REASONS.EXECUTION };
   }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Handler: listTimestamps
+// Handler: listChatsMetadata
 // Return sorted list of chat archives for a given ai_app (for sidebar).
 // ═══════════════════════════════════════════════════════════════════════════════
 
-async function listTimestamps(jsonReq) {
+async function listChatsMetadata(jsonReq) {
   const aiApp = String(
     jsonReq?.ai_app ?? jsonReq?.app ?? jsonReq?.view ?? jsonReq?.viewid ?? ""
   ).trim();
 
   if (!aiApp) {
-    LOG.error("chatArchive/listTimestamps: ai_app is required");
+    LOG.error("chatArchive/listChatsMetadata: ai_app is required");
     return { result: false, reason: REASONS.VALIDATION };
   }
   if (jsonReq.prefix          != null && typeof jsonReq.prefix          !== "string")  return { result: false, reason: REASONS.VALIDATION };
@@ -123,7 +123,7 @@ async function listTimestamps(jsonReq) {
     return { result: true, dir: path.resolve(CHAT_DB_DIR), files, count: files.length };
 
   } catch (err) {
-    LOG.error(`chatArchive/listTimestamps: ${err?.stack || err}`);
+    LOG.error(`chatArchive/listChatsMetadata: ${err?.stack || err}`);
     return { result: false, reason: REASONS.EXECUTION };
   }
 }
@@ -421,4 +421,4 @@ function _mimeFromFilename(filename) {
   })[ext] || null;
 }
 
-module.exports = { readAll, listTimestamps, appendMessage, updateTitle, deleteChat };
+module.exports = { loadChat, listChatsMetadata, appendMessage, updateTitle, deleteChat };

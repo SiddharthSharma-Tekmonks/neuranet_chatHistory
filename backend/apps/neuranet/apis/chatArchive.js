@@ -5,8 +5,8 @@
  * Dispatches to the appropriate handler in lib/chatArchive.js based on `service`.
  *
  * Supported service values:
- *   "readAll"          — load full chat session (messages + descriptor)
- *   "listTimestamps"   — list saved chats with metadata for sidebar
+ *   "loadChat"          — load full chat session (messages + descriptor)
+ *   "listChatsMetadata"   — list saved chats with metadata for sidebar
  *   "appendMessage"    — append a user/assistant message; uploads attached_files if present
  *   "updateTitle"      — rename a chat session
  *   "deleteChat"       — delete chat file and metadata record
@@ -15,8 +15,8 @@
 const chatArchive = require("../lib/chatArchive");
 
 const HANDLERS = {
-  readAll:        req     => chatArchive.readAll(req),
-  listTimestamps: req     => chatArchive.listTimestamps(req),
+  loadChat:        req     => chatArchive.loadChat(req),
+  listChatsMetadata: req     => chatArchive.listChatsMetadata(req),
   appendMessage:  req     => chatArchive.appendMessage(req),
   updateTitle:    req     => chatArchive.updateTitle(req),
   deleteChat:     req     => chatArchive.deleteChat(req),

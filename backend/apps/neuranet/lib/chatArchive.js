@@ -3,24 +3,20 @@
  * @description Library for all chat archive operations.
  *
  * Exported handlers (called by apis/chatArchive.js):
- *   loadChat(jsonReq)           — load full chat session from NDJSON file
- *   listChatsMetadata(jsonReq)    — list saved chats with metadata for sidebar
- *   appendMessage(jsonReq)     — append a user/assistant message; if jsonReq.attached_files
- *                                is present, uploads each file first then stores refs in the message
- *   updateTitle(jsonReq)       — rename a chat session
- *   deleteChat(jsonReq)        — delete chat file + metadata record
+ *   loadChat(jsonReq)         — load full chat session from NDJSON file
+ *   listChatsMetadata(jsonReq) — list saved chats with metadata for sidebar
+ *   appendMessage(jsonReq)    — append a user/assistant message; if jsonReq.attached_files
+ *                               is present, uploads each file first then stores refs in the message
+ *   updateTitle(jsonReq)      — rename a chat session
+ *   deleteChat(jsonReq)       — delete chat file + metadata record
  */
 
-const readline = require("readline");
-const fs   = require("fs");
-const fsp  = require("fs/promises");
-const path = require("path");
-const neuranetConstants = require("./neuranetconstants.js");
+const fspromises = require("fs").promises;
+const path       = require("path");
 
 // ─── Paths ───────────────────────────────────────────────────────────────────
 
-const APPROOT       = neuranetConstants.APPROOT;
-const ARCHIVE_ROOT  = path.join(APPROOT, "db", "chatarchive_db");
+const ARCHIVE_ROOT  = path.join(NEURANET_CONSTANTS.APPROOT, "db", "chatarchive_db");
 const CHAT_DB_DIR   = path.join(ARCHIVE_ROOT, "chats");
 const META_DB_FILE  = path.join(ARCHIVE_ROOT, "chat_meta.json");
 const UPLOAD_DB_DIR = path.join(ARCHIVE_ROOT, "uploaded_files");
@@ -33,6 +29,10 @@ const REASONS = {
   NOT_FOUND:  "File not found",
   FORBIDDEN:  "ai_app mismatch",
 };
+
+// ─── Validation limits ────────────────────────────────────────────────────────
+
+const MAX_TITLE_LENGTH    = 200;       // characters (frontend enforces 40; server is lenient)
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Handler: loadChat
@@ -49,9 +49,7 @@ async function loadChat(jsonReq) {
     const safeName     = _toSafeNdjsonName(jsonReq.chat_filename);
     const chatFilePath = path.join(CHAT_DB_DIR, safeName);
 
-    if (!fs.existsSync(chatFilePath) || !fs.statSync(chatFilePath).isFile()) {
-      return { result: false, reason: REASONS.NOT_FOUND };
-    }
+    if (!await _isFile(chatFilePath)) return { result: false, reason: REASONS.NOT_FOUND };
 
     const messages   = await _readNdjsonAsArray(chatFilePath);
     const metadataDB = await _loadMetaDB(META_DB_FILE);
@@ -98,26 +96,26 @@ async function listChatsMetadata(jsonReq) {
     const metadataDB    = await _loadMetaDB(META_DB_FILE);
     const existingFiles = new Set(await _safeListNdjson(CHAT_DB_DIR));
     const rawPrefix     = (jsonReq.prefix ?? jsonReq.pattern ?? "").toString();
-    const ci            = !!jsonReq.caseInsensitive;
-    const prefix        = ci ? rawPrefix.toLowerCase() : rawPrefix;
+    const caseInsensitive = !!jsonReq.caseInsensitive;
+    const prefix        = caseInsensitive ? rawPrefix.toLowerCase() : rawPrefix;
 
     const files = Object.keys(metadataDB)
-      .filter(name => {
-        if (!existingFiles.has(name)) return false;
-        if ((metadataDB[name]?.ai_app || "") !== aiApp) return false;
+      .filter(chatName => {
+        if (!existingFiles.has(chatName)) return false;
+        if ((metadataDB[chatName]?.ai_app || "") !== aiApp) return false;
         if (!prefix) return true;
-        return (ci ? name.toLowerCase() : name).startsWith(prefix);
+        return (caseInsensitive ? chatName.toLowerCase() : chatName).startsWith(prefix);
       })
-      .map(name => {
-        const m  = metadataDB[name] || {};
-        const ts = m.last_updated_on || m.created_on || null;
-        return { chat_filename: name, title: m.title || null, chatsession_id: m.chatsession_id ?? null, ts, source: ts ? "meta" : null };
+      .map(chatName => {
+        const meta = metadataDB[chatName] || {};
+        const ts   = meta.last_updated_on || meta.created_on || null;
+        return { chat_filename: chatName, title: meta.title || null, chatsession_id: meta.chatsession_id ?? null, ts, source: ts ? "meta" : null };
       })
-      .sort((a, b) => {
-        if (!a.ts && !b.ts) return 0;
-        if (!a.ts) return 1;
-        if (!b.ts) return -1;
-        return a.ts < b.ts ? 1 : (a.ts > b.ts ? -1 : 0);
+      .sort((chatA, chatB) => {
+        if (!chatA.ts && !chatB.ts) return 0;
+        if (!chatA.ts) return 1;
+        if (!chatB.ts) return -1;
+        return chatA.ts < chatB.ts ? 1 : (chatA.ts > chatB.ts ? -1 : 0);
       });
 
     return { result: true, dir: path.resolve(CHAT_DB_DIR), files, count: files.length };
@@ -145,27 +143,51 @@ async function appendMessage(jsonReq) {
   const { role, message, chat_filename, ai_app, chatsession_id,
           thoughts, thoughts_mime, attached_files } = jsonReq || {};
 
-  if (!chat_filename || typeof chat_filename !== "string" || message == null ||
-      !role || (role !== "user" && role !== "assistant")) {
-    LOG.error(`chatArchive/appendMessage: validation failed for ${JSON.stringify(jsonReq)}`);
+  if (!chat_filename || typeof chat_filename !== "string") {
+    LOG.error("chatArchive/appendMessage: missing or invalid chat_filename");
     return { result: false, reason: REASONS.VALIDATION };
+  }
+  if (message == null) {
+    LOG.error("chatArchive/appendMessage: missing message");
+    return { result: false, reason: REASONS.VALIDATION };
+  }
+  if (!role || (role !== "user" && role !== "assistant")) {
+    LOG.error(`chatArchive/appendMessage: invalid role "${role}"`);
+    return { result: false, reason: REASONS.VALIDATION };
+  }
+  if (thoughts != null && typeof thoughts !== "string") {
+    LOG.error("chatArchive/appendMessage: thoughts must be a string if provided");
+    return { result: false, reason: REASONS.VALIDATION };
+  }
+  if (thoughts_mime != null && typeof thoughts_mime !== "string") {
+    LOG.error("chatArchive/appendMessage: thoughts_mime must be a string if provided");
+    return { result: false, reason: REASONS.VALIDATION };
+  }
+  if (attached_files != null) {
+    if (!Array.isArray(attached_files)) {
+      LOG.error("chatArchive/appendMessage: attached_files must be an array");
+      return { result: false, reason: REASONS.VALIDATION };
+    }
+    for (const fileItem of attached_files) {
+      if (!fileItem || typeof fileItem !== "object" || typeof fileItem.filename !== "string" || typeof fileItem.file_data !== "string") {
+        LOG.error("chatArchive/appendMessage: each attached_file must have string filename and file_data");
+        return { result: false, reason: REASONS.VALIDATION };
+      }
+    }
   }
 
   const nowISO = new Date().toISOString();
 
   try {
-    await _ensureDir(CHAT_DB_DIR);
-    await _ensureDir(ARCHIVE_ROOT);
-
-    const safeName  = _toSafeNdjsonName(chat_filename);
-    const filePath  = path.join(CHAT_DB_DIR, safeName);
-    const isNewFile = !fs.existsSync(filePath);
-    if (isNewFile) await fsp.writeFile(filePath, "", { encoding: "utf8", mode: 0o600 });
+    const safeName   = _toSafeNdjsonName(chat_filename);
+    const filePath   = path.join(CHAT_DB_DIR, safeName);
+    const isNewFile  = !await _isFile(filePath);
+    if (isNewFile) await fspromises.writeFile(filePath, "", { encoding: "utf8", mode: 0o600 });
 
     // Upload attached files (if any) and collect stored refs
-    const has_files = Array.isArray(attached_files) && attached_files.length > 0;
-    const files = has_files
-      ? (await Promise.all(attached_files.map(f => _uploadSingleFile(chat_filename, f)))).filter(Boolean)
+    const hasFiles = Array.isArray(attached_files) && attached_files.length > 0;
+    const files = hasFiles
+      ? (await Promise.all(attached_files.map(fileItem => _uploadSingleFile(chat_filename, fileItem)))).filter(Boolean)
       : [];
 
     const msgObj = { type: "message", role: String(role), message, ts: nowISO };
@@ -177,7 +199,7 @@ async function appendMessage(jsonReq) {
 
     let messageAppended = false;
     try {
-      await fsp.appendFile(filePath, JSON.stringify(msgObj) + "\n", { encoding: "utf8", mode: 0o600 });
+      await fspromises.appendFile(filePath, JSON.stringify(msgObj) + "\n", { encoding: "utf8", mode: 0o600 });
       messageAppended = true;
       LOG.debug(`chatArchive/appendMessage: appended to ${filePath}`);
     } catch (appendErr) {
@@ -205,7 +227,7 @@ async function appendMessage(jsonReq) {
       metaDB[safeName] = metaRecord;
       await _saveMetaDBAtomic(META_DB_FILE, metaDB);
 
-      LOG.info(`chatArchive/appendMessage: wrote to ${filePath}; meta updated (newFile=${isNewFile}, hasFiles=${has_files})`);
+      LOG.info(`chatArchive/appendMessage: wrote to ${filePath}; meta updated (newFile=${isNewFile}, hasFiles=${hasFiles})`);
       return { result: true, filepath: filePath, descriptorAdded: false, metaUpdated: true };
 
     } catch (metaErr) {
@@ -236,7 +258,14 @@ async function updateTitle(jsonReq) {
   const aiAppId  = String(jsonReq?.ai_app  || "").trim();
   const newTitle = String(jsonReq?.title   || "").trim();
 
-  if (!safeName || !aiAppId || !newTitle) return { result: false, reason: REASONS.VALIDATION };
+  if (!safeName || !aiAppId || !newTitle) {
+    LOG.error(`chatArchive/updateTitle: missing required field(s) — chat_filename="${jsonReq?.chat_filename}", ai_app="${jsonReq?.ai_app}", title="${jsonReq?.title}"`);
+    return { result: false, reason: REASONS.VALIDATION };
+  }
+  if (newTitle.length > MAX_TITLE_LENGTH) {
+    LOG.error(`chatArchive/updateTitle: title exceeds max length (${newTitle.length} > ${MAX_TITLE_LENGTH})`);
+    return { result: false, reason: REASONS.VALIDATION };
+  }
 
   try {
     const metadataDB = await _loadMetaDB(META_DB_FILE);
@@ -278,7 +307,7 @@ async function deleteChat(jsonReq) {
 
     const chatFilePath = path.join(path.resolve(CHAT_DB_DIR), safeName);
     try {
-      if (fs.existsSync(chatFilePath) && fs.statSync(chatFilePath).isFile()) await fsp.unlink(chatFilePath);
+      if (await _isFile(chatFilePath)) await fspromises.unlink(chatFilePath);
     } catch (unlinkErr) {
       LOG.warn(`chatArchive/deleteChat: unlink failed for ${chatFilePath}: ${unlinkErr?.message}`);
     }
@@ -303,30 +332,41 @@ async function deleteChat(jsonReq) {
  * Used internally by appendMessage when attached_files are present.
  * Returns a stored-ref object on success, or a partial ref on failure.
  */
-async function _uploadSingleFile(chat_filename, fileObj) {
+async function _uploadSingleFile(chat_filename, fileItem) {
   try {
-    const { filename, fileid, file_data } = fileObj || {};
-    if (!file_data || !filename) return { filename, fileid };
+    const { filename, fileid, file_data } = fileItem || {};
+    if (!file_data || !filename) {
+      LOG.warn(`chatArchive/_uploadSingleFile: skipping "${filename}" — missing filename or file_data`);
+      return { filename, fileid };
+    }
+
+    const fileContent = Buffer.from(file_data, "base64");
+    if (fileContent.length === 0) {
+      LOG.warn(`chatArchive/_uploadSingleFile: skipping "${filename}" — decoded content is empty`);
+      return { filename, fileid };
+    }
 
     const chatFolderName = _toSafeFolderName(chat_filename);
     const chatUploadDir  = path.join(UPLOAD_DB_DIR, chatFolderName);
-    await _ensureDir(UPLOAD_DB_DIR);
-    await _ensureDir(chatUploadDir);
+    await fspromises.mkdir(chatUploadDir, { recursive: true, mode: 0o700 });
 
     const originalName   = String(filename || "uploaded_file");
     const mimeType       = _mimeFromFilename(originalName) || "application/octet-stream";
-    const fileContent    = Buffer.from(file_data, "base64");
     const storedFilename = `${Date.now()}__${_toSafeFileName(originalName)}`;
     const storedPath     = path.join(chatUploadDir, storedFilename);
 
-    await fsp.writeFile(storedPath, fileContent, { mode: 0o600 });
-    LOG.debug(`chatArchive/_uploadSingleFile: stored ${storedFilename} for chat=${chatFolderName}`);
+    await fspromises.writeFile(storedPath, fileContent, { mode: 0o600 });
+    LOG.debug(`chatArchive/_uploadSingleFile: stored ${storedFilename} (${fileContent.length} bytes) for chat=${chatFolderName}`);
 
     return { filename, fileid, stored_filename: storedFilename, stored_abs_path: storedPath, mime_type: mimeType, size: fileContent.length };
   } catch (err) {
-    LOG.error(`chatArchive/_uploadSingleFile: failed for ${fileObj?.filename}: ${err?.message}`);
-    return { filename: fileObj?.filename, fileid: fileObj?.fileid };
+    LOG.error(`chatArchive/_uploadSingleFile: failed for "${fileItem?.filename}": ${err?.message}`);
+    return { filename: fileItem?.filename, fileid: fileItem?.fileid };
   }
+}
+
+async function _isFile(filePath) {
+  try { return (await fspromises.stat(filePath)).isFile(); } catch { return false; }
 }
 
 function _toSafeNdjsonName(rawName) {
@@ -351,42 +391,36 @@ function _toSafeFileName(fileName) {
 
 async function _loadMetaDB(filePath) {
   try {
-    const data = await fsp.readFile(filePath, "utf8");
+    const data = await fspromises.readFile(filePath, "utf8");
     const obj  = JSON.parse(data);
     return (obj && typeof obj === "object") ? obj : {};
   } catch { return {}; }
 }
 
 async function _saveMetaDBAtomic(filePath, obj) {
-  await fsp.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  await fspromises.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
   const tmp = filePath + ".tmp";
-  await fsp.writeFile(tmp, JSON.stringify(obj, null, 2), { encoding: "utf8", mode: 0o600 });
-  await fsp.rename(tmp, filePath);
-}
-
-async function _ensureDir(dir) {
-  await fsp.mkdir(dir, { recursive: true, mode: 0o700 });
+  await fspromises.writeFile(tmp, JSON.stringify(obj, null, 2), { encoding: "utf8", mode: 0o600 });
+  await fspromises.rename(tmp, filePath);
 }
 
 async function _safeListNdjson(dir) {
   try {
-    const entries = await fsp.readdir(dir, { withFileTypes: true });
-    return entries.filter(e => e.isFile() && e.name.endsWith(".ndjson") && !e.name.startsWith(".")).map(e => e.name);
+    const entries = await fspromises.readdir(dir, { withFileTypes: true });
+    return entries
+      .filter(entry => entry.isFile() && entry.name.endsWith(".ndjson") && !entry.name.startsWith("."))
+      .map(entry => entry.name);
   } catch { return []; }
 }
 
 async function _readNdjsonAsArray(filePath) {
-  const handle = await fsp.open(filePath, "r");
-  const msgs   = [];
   try {
-    const rl = readline.createInterface({ input: handle.createReadStream({ encoding: "utf8" }), crlfDelay: Infinity });
-    for await (const line of rl) {
-      const t = (line || "").trim();
-      if (!t) continue;
-      try { msgs.push(JSON.parse(t)); } catch { /* skip malformed lines */ }
-    }
-    return msgs;
-  } finally { await handle.close(); }
+    const content = await fspromises.readFile(filePath, "utf8");
+    return content.split("\n")
+      .map(line => line.trim())
+      .filter(line => line.length > 0)
+      .flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
+  } catch { return []; }
 }
 
 function _buildTitle(message, maxLen = 40) {
@@ -399,11 +433,11 @@ function _buildTitle(message, maxLen = 40) {
 }
 
 async function _removeLastLine(filePath) {
-  const content = await fsp.readFile(filePath, "utf8");
+  const content = await fspromises.readFile(filePath, "utf8");
   const lines   = content.split("\n");
   if (lines.length > 1) lines.pop();
   if (lines.length > 0) lines.pop();
-  await fsp.writeFile(filePath, lines.length > 0 ? lines.join("\n") + "\n" : "", { encoding: "utf8", mode: 0o600 });
+  await fspromises.writeFile(filePath, lines.length > 0 ? lines.join("\n") + "\n" : "", { encoding: "utf8", mode: 0o600 });
 }
 
 function _mimeFromFilename(filename) {

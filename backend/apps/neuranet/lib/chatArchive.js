@@ -276,14 +276,13 @@ async function _uploadSingleFile(chat_filename, fileItem) {
     await memfs.mkdir(chatUploadDir, { recursive: true, mode: 0o700 });
 
     const originalName   = String(filename || "uploaded_file");
-    const mimeType       = _mimeFromFilename(originalName) || "application/octet-stream";
     const storedFilename = `${Date.now()}__${_toSafeFileName(originalName)}`;
     const storedPath     = path.join(chatUploadDir, storedFilename);
 
     await memfs.writeFile(storedPath, fileContent, { mode: 0o600 });
     LOG.debug(`chatArchive/_uploadSingleFile: stored ${storedFilename} (${fileContent.length} bytes)`);
 
-    return { filename, fileid, stored_filename: storedFilename, stored_abs_path: storedPath, mime_type: mimeType, size: fileContent.length };
+    return { filename, fileid, stored_filename: storedFilename, stored_abs_path: storedPath, size: fileContent.length };
   } catch (err) {
     LOG.error(`chatArchive/_uploadSingleFile: failed for "${fileItem?.filename}": ${err?.message}`);
     return { filename: fileItem?.filename, fileid: fileItem?.fileid };
@@ -363,19 +362,5 @@ async function _removeLastLine(filePath) {
   await memfs.writeFile(filePath, lines.length > 0 ? lines.join("\n") + "\n" : "", { encoding: "utf8", mode: 0o600 });
 }
 
-function _mimeFromFilename(filename) {
-  const ext = filename.toLowerCase().split(".").pop();
-  return ({
-    pdf:"application/pdf", doc:"application/msword",
-    docx:"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    xls:"application/vnd.ms-excel",
-    xlsx:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ppt:"application/vnd.ms-powerpoint",
-    pptx:"application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    txt:"text/plain", csv:"text/csv", json:"application/json", xml:"application/xml",
-    jpg:"image/jpeg", jpeg:"image/jpeg", png:"image/png", gif:"image/gif",
-    zip:"application/zip", tar:"application/x-tar", gz:"application/gzip",
-  })[ext] || null;
-}
 
 module.exports = { loadChat, listChatsMetadata, appendMessage, updateTitle, deleteChat };

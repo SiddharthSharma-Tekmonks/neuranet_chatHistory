@@ -11,8 +11,8 @@
  *   deleteChat(jsonReq)        — delete chat file + metadata record
  */
 
-const fspromises = require("fs").promises;
-const path       = require("path");
+const memfs = require(`${CONSTANTS.LIBDIR}/memfs.js`);
+const path  = require("path");
 
 // ─── Paths (from neuranet constants) ─────────────────────────────────────────
 
@@ -125,7 +125,7 @@ async function appendMessage(jsonReq) {
     const safeName  = _toSafeNdjsonName(chat_filename);
     const filePath  = path.join(CHAT_DB_DIR, safeName);
     const isNewFile = !await _isFile(filePath);
-    if (isNewFile) await fspromises.writeFile(filePath, "", { encoding: "utf8", mode: 0o600 });
+    if (isNewFile) await memfs.writeFile(filePath, "", { encoding: "utf8", mode: 0o600 });
 
     const hasFiles = Array.isArray(attached_files) && attached_files.length > 0;
     const files = hasFiles
@@ -141,7 +141,7 @@ async function appendMessage(jsonReq) {
 
     let messageAppended = false;
     try {
-      await fspromises.appendFile(filePath, JSON.stringify(msgObj) + "\n", { encoding: "utf8", mode: 0o600 });
+      await memfs.appendFile(filePath, JSON.stringify(msgObj) + "\n", { encoding: "utf8", mode: 0o600 });
       messageAppended = true;
       LOG.debug(`chatArchive/appendMessage: appended to ${filePath}`);
     } catch (appendErr) {
@@ -167,7 +167,7 @@ async function appendMessage(jsonReq) {
       if ((!metaRecord.title || !String(metaRecord.title).trim()) && message) metaRecord.title = _buildTitle(message);
 
       metaDB[safeName] = metaRecord;
-      await _saveMetaDBAtomic(META_DB_FILE, metaDB);
+      await _saveMetaDB(META_DB_FILE, metaDB);
 
       LOG.info(`chatArchive/appendMessage: wrote to ${filePath}; meta updated (newFile=${isNewFile}, hasFiles=${hasFiles})`);
       return { result: true, filepath: filePath, descriptorAdded: false, metaUpdated: true };
@@ -210,7 +210,7 @@ async function updateTitle(jsonReq) {
     entry.title           = newTitle;
     entry.last_updated_on = new Date().toISOString();
     metadataDB[safeName]  = entry;
-    await _saveMetaDBAtomic(META_DB_FILE, metadataDB);
+    await _saveMetaDB(META_DB_FILE, metadataDB);
 
     return { result: true, action: "updateTitle", chat_filename: safeName, ai_app: aiAppId, title: entry.title, last_updated_on: entry.last_updated_on };
 
@@ -238,13 +238,13 @@ async function deleteChat(jsonReq) {
 
     const chatFilePath = path.join(CHAT_DB_DIR, safeName);
     try {
-      if (await _isFile(chatFilePath)) await fspromises.unlink(chatFilePath);
+      if (await _isFile(chatFilePath)) await memfs.unlink(chatFilePath);
     } catch (unlinkErr) {
       LOG.warn(`chatArchive/deleteChat: unlink failed for ${chatFilePath}: ${unlinkErr?.message}`);
     }
 
     delete metadataDB[safeName];
-    await _saveMetaDBAtomic(META_DB_FILE, metadataDB);
+    await _saveMetaDB(META_DB_FILE, metadataDB);
 
     return { result: true, action: "deleteChat", chat_filename: safeName, ai_app: aiAppId, removed_file: true, removed_meta: true };
 
@@ -273,14 +273,14 @@ async function _uploadSingleFile(chat_filename, fileItem) {
     }
 
     const chatUploadDir  = path.join(UPLOAD_DB_DIR, _toSafeFolderName(chat_filename));
-    await fspromises.mkdir(chatUploadDir, { recursive: true, mode: 0o700 });
+    await memfs.mkdir(chatUploadDir, { recursive: true, mode: 0o700 });
 
     const originalName   = String(filename || "uploaded_file");
     const mimeType       = _mimeFromFilename(originalName) || "application/octet-stream";
     const storedFilename = `${Date.now()}__${_toSafeFileName(originalName)}`;
     const storedPath     = path.join(chatUploadDir, storedFilename);
 
-    await fspromises.writeFile(storedPath, fileContent, { mode: 0o600 });
+    await memfs.writeFile(storedPath, fileContent, { mode: 0o600 });
     LOG.debug(`chatArchive/_uploadSingleFile: stored ${storedFilename} (${fileContent.length} bytes)`);
 
     return { filename, fileid, stored_filename: storedFilename, stored_abs_path: storedPath, mime_type: mimeType, size: fileContent.length };
@@ -291,7 +291,7 @@ async function _uploadSingleFile(chat_filename, fileItem) {
 }
 
 async function _isFile(filePath) {
-  try { return (await fspromises.stat(filePath)).isFile(); } catch { return false; }
+  try { return (await memfs.stat(filePath)).isFile(); } catch { return false; }
 }
 
 function _toSafeNdjsonName(rawName) {
@@ -316,22 +316,20 @@ function _toSafeFileName(fileName) {
 
 async function _loadMetaDB(filePath) {
   try {
-    const data = await fspromises.readFile(filePath, "utf8");
+    const data = await memfs.readFile(filePath, "utf8");
     const obj  = JSON.parse(data);
     return (obj && typeof obj === "object") ? obj : {};
   } catch { return {}; }
 }
 
-async function _saveMetaDBAtomic(filePath, obj) {
-  await fspromises.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  const tmp = filePath + ".tmp";
-  await fspromises.writeFile(tmp, JSON.stringify(obj, null, 2), { encoding: "utf8", mode: 0o600 });
-  await fspromises.rename(tmp, filePath);
+async function _saveMetaDB(filePath, obj) {
+  await memfs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  await memfs.writeFile(filePath, JSON.stringify(obj, null, 2), { encoding: "utf8", mode: 0o600 });
 }
 
 async function _safeListNdjson(dir) {
   try {
-    const entries = await fspromises.readdir(dir, { withFileTypes: true });
+    const entries = await memfs.readdir(dir, { withFileTypes: true });
     return entries
       .filter(entry => entry.isFile() && entry.name.endsWith(".ndjson") && !entry.name.startsWith("."))
       .map(entry => entry.name);
@@ -340,7 +338,7 @@ async function _safeListNdjson(dir) {
 
 async function _readNdjsonAsArray(filePath) {
   try {
-    const content = await fspromises.readFile(filePath, "utf8");
+    const content = await memfs.readFile(filePath, "utf8");
     return content.split("\n")
       .map(line => line.trim())
       .filter(line => line.length > 0)
@@ -358,11 +356,11 @@ function _buildTitle(message, maxLen = 40) {
 }
 
 async function _removeLastLine(filePath) {
-  const content = await fspromises.readFile(filePath, "utf8");
+  const content = await memfs.readFile(filePath, "utf8");
   const lines   = content.split("\n");
   if (lines.length > 1) lines.pop();
   if (lines.length > 0) lines.pop();
-  await fspromises.writeFile(filePath, lines.length > 0 ? lines.join("\n") + "\n" : "", { encoding: "utf8", mode: 0o600 });
+  await memfs.writeFile(filePath, lines.length > 0 ? lines.join("\n") + "\n" : "", { encoding: "utf8", mode: 0o600 });
 }
 
 function _mimeFromFilename(filename) {

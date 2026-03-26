@@ -40,6 +40,11 @@ exports.ROLES = {ADMIN: "admin", USER: "user"};
 
 exports.getPlugin = name => require(`${exports.LIBDIR}/pluginhandler.js`).getPlugin(name);
 
+exports.CHATARCHIVE_ROOT       = path.resolve(`${BACKEND_ROOT}/db/chatarchive_db`);
+exports.CHATARCHIVE_CHATS_DIR  = path.resolve(`${exports.CHATARCHIVE_ROOT}/chats`);
+exports.CHATARCHIVE_META_FILE  = path.resolve(`${exports.CHATARCHIVE_ROOT}/chat_meta.json`);
+exports.CHATARCHIVE_UPLOADS_DIR = path.resolve(`${exports.CHATARCHIVE_ROOT}/uploaded_files`);
+
 exports.NEURANETEVENT = "__org_monkshu_neuranet_event";
 exports.EVENTS = Object.freeze({AIDB_FILE_PROCESSING: "aidb_file_processing", AIDB_FILE_PROGRESS: "aidb_file_progress", 
     AIDB_FILE_PROCESSED: "aidb_file_processed", FILE_CREATED: "filecreated",

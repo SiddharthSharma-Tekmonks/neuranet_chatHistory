@@ -3,23 +3,22 @@
  * @description Library for all chat archive operations.
  *
  * Exported handlers (called by apis/chatArchive.js):
- *   loadChat(jsonReq)         — load full chat session from NDJSON file
+ *   loadChat(jsonReq)          — load full chat session from NDJSON file
  *   listChatsMetadata(jsonReq) — list saved chats with metadata for sidebar
- *   appendMessage(jsonReq)    — append a user/assistant message; if jsonReq.attached_files
- *                               is present, uploads each file first then stores refs in the message
- *   updateTitle(jsonReq)      — rename a chat session
- *   deleteChat(jsonReq)       — delete chat file + metadata record
+ *   appendMessage(jsonReq)     — append a user/assistant message; if jsonReq.attached_files
+ *                                is present, uploads each file first then stores refs in the message
+ *   updateTitle(jsonReq)       — rename a chat session
+ *   deleteChat(jsonReq)        — delete chat file + metadata record
  */
 
 const fspromises = require("fs").promises;
 const path       = require("path");
 
-// ─── Paths ───────────────────────────────────────────────────────────────────
+// ─── Paths (from neuranet constants) ─────────────────────────────────────────
 
-const ARCHIVE_ROOT  = path.join(NEURANET_CONSTANTS.APPROOT, "db", "chatarchive_db");
-const CHAT_DB_DIR   = path.join(ARCHIVE_ROOT, "chats");
-const META_DB_FILE  = path.join(ARCHIVE_ROOT, "chat_meta.json");
-const UPLOAD_DB_DIR = path.join(ARCHIVE_ROOT, "uploaded_files");
+const CHAT_DB_DIR   = NEURANET_CONSTANTS.CHATARCHIVE_CHATS_DIR;
+const META_DB_FILE  = NEURANET_CONSTANTS.CHATARCHIVE_META_FILE;
+const UPLOAD_DB_DIR = NEURANET_CONSTANTS.CHATARCHIVE_UPLOADS_DIR;
 
 // ─── Shared error reasons ─────────────────────────────────────────────────────
 
@@ -30,21 +29,12 @@ const REASONS = {
   FORBIDDEN:  "ai_app mismatch",
 };
 
-// ─── Validation limits ────────────────────────────────────────────────────────
-
-const MAX_TITLE_LENGTH    = 200;       // characters (frontend enforces 40; server is lenient)
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // Handler: loadChat
 // Load a complete chat session (descriptor + messages) from an NDJSON file.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 async function loadChat(jsonReq) {
-  if (!jsonReq?.chat_filename || typeof jsonReq.chat_filename !== "string") {
-    LOG.error(`chatArchive/loadChat: validation failed for ${JSON.stringify(jsonReq)}`);
-    return { result: false, reason: REASONS.VALIDATION };
-  }
-
   try {
     const safeName     = _toSafeNdjsonName(jsonReq.chat_filename);
     const chatFilePath = path.join(CHAT_DB_DIR, safeName);
@@ -80,19 +70,8 @@ async function loadChat(jsonReq) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 async function listChatsMetadata(jsonReq) {
-  const aiApp = String(
-    jsonReq?.ai_app ?? jsonReq?.app ?? jsonReq?.view ?? jsonReq?.viewid ?? ""
-  ).trim();
-
-  if (!aiApp) {
-    LOG.error("chatArchive/listChatsMetadata: ai_app is required");
-    return { result: false, reason: REASONS.VALIDATION };
-  }
-  if (jsonReq.prefix          != null && typeof jsonReq.prefix          !== "string")  return { result: false, reason: REASONS.VALIDATION };
-  if (jsonReq.pattern         != null && typeof jsonReq.pattern         !== "string")  return { result: false, reason: REASONS.VALIDATION };
-  if (jsonReq.caseInsensitive != null && typeof jsonReq.caseInsensitive !== "boolean") return { result: false, reason: REASONS.VALIDATION };
-
   try {
+    const aiApp         = String(jsonReq.ai_app ?? jsonReq.app ?? jsonReq.view ?? jsonReq.viewid ?? "").trim();
     const metadataDB    = await _loadMetaDB(META_DB_FILE);
     const existingFiles = new Set(await _safeListNdjson(CHAT_DB_DIR));
     const rawPrefix     = (jsonReq.prefix ?? jsonReq.pattern ?? "").toString();
@@ -130,10 +109,8 @@ async function listChatsMetadata(jsonReq) {
 // Handler: appendMessage
 //
 // Appends a user or assistant message to an NDJSON chat file and updates metadata.
-//
-// If jsonReq.attached_files is a non-empty array, each file is uploaded to the
-// chat's upload folder first and the resulting stored refs are embedded in the
-// message's `files` field before the append.
+// If jsonReq.attached_files is present, each file is uploaded first and the
+// stored refs are embedded in the message's `files` field.
 //
 // jsonReq.attached_files shape:
 //   [{ filename: string, fileid: string, file_data: string (base64) }, ...]
@@ -141,50 +118,15 @@ async function listChatsMetadata(jsonReq) {
 
 async function appendMessage(jsonReq) {
   const { role, message, chat_filename, ai_app, chatsession_id,
-          thoughts, thoughts_mime, attached_files } = jsonReq || {};
-
-  if (!chat_filename || typeof chat_filename !== "string") {
-    LOG.error("chatArchive/appendMessage: missing or invalid chat_filename");
-    return { result: false, reason: REASONS.VALIDATION };
-  }
-  if (message == null) {
-    LOG.error("chatArchive/appendMessage: missing message");
-    return { result: false, reason: REASONS.VALIDATION };
-  }
-  if (!role || (role !== "user" && role !== "assistant")) {
-    LOG.error(`chatArchive/appendMessage: invalid role "${role}"`);
-    return { result: false, reason: REASONS.VALIDATION };
-  }
-  if (thoughts != null && typeof thoughts !== "string") {
-    LOG.error("chatArchive/appendMessage: thoughts must be a string if provided");
-    return { result: false, reason: REASONS.VALIDATION };
-  }
-  if (thoughts_mime != null && typeof thoughts_mime !== "string") {
-    LOG.error("chatArchive/appendMessage: thoughts_mime must be a string if provided");
-    return { result: false, reason: REASONS.VALIDATION };
-  }
-  if (attached_files != null) {
-    if (!Array.isArray(attached_files)) {
-      LOG.error("chatArchive/appendMessage: attached_files must be an array");
-      return { result: false, reason: REASONS.VALIDATION };
-    }
-    for (const fileItem of attached_files) {
-      if (!fileItem || typeof fileItem !== "object" || typeof fileItem.filename !== "string" || typeof fileItem.file_data !== "string") {
-        LOG.error("chatArchive/appendMessage: each attached_file must have string filename and file_data");
-        return { result: false, reason: REASONS.VALIDATION };
-      }
-    }
-  }
-
+          thoughts, thoughts_mime, attached_files } = jsonReq;
   const nowISO = new Date().toISOString();
 
   try {
-    const safeName   = _toSafeNdjsonName(chat_filename);
-    const filePath   = path.join(CHAT_DB_DIR, safeName);
-    const isNewFile  = !await _isFile(filePath);
+    const safeName  = _toSafeNdjsonName(chat_filename);
+    const filePath  = path.join(CHAT_DB_DIR, safeName);
+    const isNewFile = !await _isFile(filePath);
     if (isNewFile) await fspromises.writeFile(filePath, "", { encoding: "utf8", mode: 0o600 });
 
-    // Upload attached files (if any) and collect stored refs
     const hasFiles = Array.isArray(attached_files) && attached_files.length > 0;
     const files = hasFiles
       ? (await Promise.all(attached_files.map(fileItem => _uploadSingleFile(chat_filename, fileItem)))).filter(Boolean)
@@ -254,18 +196,9 @@ async function appendMessage(jsonReq) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 async function updateTitle(jsonReq) {
-  const safeName = _toSafeNdjsonName(jsonReq?.chat_filename);
-  const aiAppId  = String(jsonReq?.ai_app  || "").trim();
-  const newTitle = String(jsonReq?.title   || "").trim();
-
-  if (!safeName || !aiAppId || !newTitle) {
-    LOG.error(`chatArchive/updateTitle: missing required field(s) — chat_filename="${jsonReq?.chat_filename}", ai_app="${jsonReq?.ai_app}", title="${jsonReq?.title}"`);
-    return { result: false, reason: REASONS.VALIDATION };
-  }
-  if (newTitle.length > MAX_TITLE_LENGTH) {
-    LOG.error(`chatArchive/updateTitle: title exceeds max length (${newTitle.length} > ${MAX_TITLE_LENGTH})`);
-    return { result: false, reason: REASONS.VALIDATION };
-  }
+  const safeName = _toSafeNdjsonName(jsonReq.chat_filename);
+  const aiAppId  = String(jsonReq.ai_app || "").trim();
+  const newTitle = String(jsonReq.title  || "").trim();
 
   try {
     const metadataDB = await _loadMetaDB(META_DB_FILE);
@@ -293,10 +226,8 @@ async function updateTitle(jsonReq) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 async function deleteChat(jsonReq) {
-  const safeName = _toSafeNdjsonName(jsonReq?.chat_filename);
-  const aiAppId  = String(jsonReq?.ai_app || "").trim();
-
-  if (!safeName || !aiAppId) return { result: false, reason: REASONS.VALIDATION };
+  const safeName = _toSafeNdjsonName(jsonReq.chat_filename);
+  const aiAppId  = String(jsonReq.ai_app || "").trim();
 
   try {
     const metadataDB = await _loadMetaDB(META_DB_FILE);
@@ -305,7 +236,7 @@ async function deleteChat(jsonReq) {
     if (!entry)                           return { result: false, reason: REASONS.NOT_FOUND };
     if ((entry.ai_app || "") !== aiAppId) return { result: false, reason: REASONS.FORBIDDEN };
 
-    const chatFilePath = path.join(path.resolve(CHAT_DB_DIR), safeName);
+    const chatFilePath = path.join(CHAT_DB_DIR, safeName);
     try {
       if (await _isFile(chatFilePath)) await fspromises.unlink(chatFilePath);
     } catch (unlinkErr) {
@@ -327,11 +258,6 @@ async function deleteChat(jsonReq) {
 // Private utilities
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Upload a single file to the chat's upload folder.
- * Used internally by appendMessage when attached_files are present.
- * Returns a stored-ref object on success, or a partial ref on failure.
- */
 async function _uploadSingleFile(chat_filename, fileItem) {
   try {
     const { filename, fileid, file_data } = fileItem || {};
@@ -346,8 +272,7 @@ async function _uploadSingleFile(chat_filename, fileItem) {
       return { filename, fileid };
     }
 
-    const chatFolderName = _toSafeFolderName(chat_filename);
-    const chatUploadDir  = path.join(UPLOAD_DB_DIR, chatFolderName);
+    const chatUploadDir  = path.join(UPLOAD_DB_DIR, _toSafeFolderName(chat_filename));
     await fspromises.mkdir(chatUploadDir, { recursive: true, mode: 0o700 });
 
     const originalName   = String(filename || "uploaded_file");
@@ -356,7 +281,7 @@ async function _uploadSingleFile(chat_filename, fileItem) {
     const storedPath     = path.join(chatUploadDir, storedFilename);
 
     await fspromises.writeFile(storedPath, fileContent, { mode: 0o600 });
-    LOG.debug(`chatArchive/_uploadSingleFile: stored ${storedFilename} (${fileContent.length} bytes) for chat=${chatFolderName}`);
+    LOG.debug(`chatArchive/_uploadSingleFile: stored ${storedFilename} (${fileContent.length} bytes)`);
 
     return { filename, fileid, stored_filename: storedFilename, stored_abs_path: storedPath, mime_type: mimeType, size: fileContent.length };
   } catch (err) {

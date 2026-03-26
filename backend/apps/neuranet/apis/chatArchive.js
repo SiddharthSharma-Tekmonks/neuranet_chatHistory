@@ -27,6 +27,16 @@ const HANDLERS = {
   deleteChat:        req => chatArchive.deleteChat(req),
 };
 
+const VALIDATORS = {
+  loadChat:          req => req.chat_filename && typeof req.chat_filename === "string",
+  listChatsMetadata: req => Boolean(req.ai_app),
+  appendMessage:     req => typeof req.chat_filename === "string" && req.message != null &&
+                            (req.role === "user" || req.role === "assistant"),
+  updateTitle:       req => typeof req.chat_filename === "string" && req.ai_app &&
+                            req.title && String(req.title).trim().length > 0,
+  deleteChat:        req => typeof req.chat_filename === "string" && req.ai_app,
+};
+
 const validateRequest = jsonReq => (jsonReq && jsonReq.id && jsonReq.org && jsonReq.service && HANDLERS[jsonReq.service]);
 
 exports.doService = async (jsonReq, _servObject, _headers, _url) => {
@@ -36,6 +46,12 @@ exports.doService = async (jsonReq, _servObject, _headers, _url) => {
   }
 
   const serviceName = String(jsonReq.service).trim();
+
+  if (!VALIDATORS[serviceName](jsonReq)) {
+    LOG.error(`chatArchive API: service validation failed for service="${serviceName}" id="${jsonReq.id}"`);
+    return { result: false, reason: "Validation failed" };
+  }
+
   LOG.debug(`chatArchive API: dispatching service="${serviceName}" for id="${jsonReq.id}"`);
 
   try {

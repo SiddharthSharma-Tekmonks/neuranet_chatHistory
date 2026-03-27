@@ -28,7 +28,15 @@ async function elementConnected(host) {
         tts_flag = host.getAttribute("tts")?.toLowerCase() == "true", greeting = host.getAttribute("greeting") || "";
 	chat_box.setDataByHost(host, {COMPONENT_PATH, ATTACHMENT_ALLOWED: ATTACHMENT_ALLOWED?"true":undefined, 
         STT: stt_flag?"true":undefined, TTS: tts_flag?"true":undefined, GREETING: greeting });
-    const memory = chat_box.getMemoryByHost(host); memory.FILES_ATTACHED = [];
+    const memory = chat_box.getMemoryByHost(host); 
+    memory.FILES_ATTACHED = [];
+    memory.speech = {
+        recognition: null,
+        isListening: false,
+        finalTranscript: "",
+        currentUtterance: null,
+        speakingButton: null
+    };
     const typewriter = host.getAttribute("typewriter");
     memory.typewriter = typewriter ? (typewriter.toLowerCase() == "false" ? false : parseInt(host.getAttribute("typewriter"))) : false;
     MUSTACHE = await router.getMustache();
@@ -36,7 +44,7 @@ async function elementConnected(host) {
 
 async function elementRendered(host) {
     const shadowRoot = chat_box.getShadowRootByHost(host);
-    const textareaEdit = shadowRoot.querySelector("textarea#messagearea")
+    const textareaEdit = shadowRoot.querySelector("textarea#messagearea");
     textareaEdit.focus();
 }
 
@@ -45,13 +53,29 @@ async function send(containedElement) {
     const userMessageArea = shadowRoot.querySelector("textarea#messagearea"), userPrompt = userMessageArea.value.trim();
     if (userPrompt == "") return;    // empty prompt, ignore
 
+    const memory = _getMemory(containedElement);
+    if (memory?.speech?.isListening && memory.speech.recognition) {
+        try { memory.speech.recognition.stop(); } catch (err) {}
+    }
+
+    if (window.speechSynthesis?.speaking || window.speechSynthesis?.pending) {
+        try { window.speechSynthesis.cancel(); } catch (err) {}
+        if (memory?.speech?.speakingButton) _setSpeakerSpeakingState(memory.speech.speakingButton, false);
+        if (memory?.speech) {
+            memory.speech.currentUtterance = null;
+            memory.speech.speakingButton = null;
+        }
+    }
+
     // disable send box and controls
     const divMessage = shadowRoot.querySelector("div#message"),
         buttonSendImg = shadowRoot.querySelector("img#send"),
         attachImg = shadowRoot.querySelector("img#attach"),
+        micImg = shadowRoot.querySelector("img#mic"),
         checkBox = shadowRoot.querySelector("input#multiline");
     divMessage.classList.add("disabled"), checkBox.setAttribute("disabled", true);
     if (attachImg) attachImg.style.pointerEvents = "none";
+    if (micImg) micImg.style.pointerEvents = "none";
     buttonSendImg.src = `${COMPONENT_PATH}/img/spinner.svg`; userMessageArea.readOnly = true;
 
     // insert the user's message
@@ -69,13 +93,14 @@ async function send(containedElement) {
                 buttonSendImg.src = `${COMPONENT_PATH}/img/send.svg`;
                 divMessage.classList.remove("disabled"), checkBox.removeAttribute("disabled");
                 if (attachImg) attachImg.style.pointerEvents = "";
+                if (micImg) micImg.style.pointerEvents = "";
                 userMessageArea.readOnly = false;
             }   
         },
         insertAIThoughts: (thoughts, thoughts_mime, message_id=last_message_id) => _insertAIThoughts(shadowRoot, thoughts, thoughts_mime, message_id),
-        getCollapsibleSection: (title, content) => _getCollapsibleSection(containedElement, title, content),
+        getCollapsibleSection: (title, content) => _getCollapsibleSection(shadowRoot, title, content),
         getAIContent: message_id => _getAIResponseContent(shadowRoot, message_id=last_message_id)||""
-    }
+    };
     const requestProcessor = util.createAsyncFunction(`return await ${onRequest};`);
     requestProcessor({chatbox: wrappedChatBox, message_id, prompt: userPrompt, files: _getMemory(containedElement).FILES_ATTACHED});
 }
@@ -295,6 +320,178 @@ function _renderFileIcon(placeholder, shadowRoot, FILE_EXT) {
     placeholder.replaceWith(t.content.cloneNode(true));
 }
 
+function _getSpeechRecognitionCtor() {
+    return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+}
+
+function _setMicListeningState(button, listening) {
+    if (!button) return;
+    button.dataset.listening = listening ? "true" : "false";
+    button.style.opacity = listening ? "0.6" : "";
+    button.title = listening ? "Stop voice input" : "Start voice input";
+}
+
+function _setSpeakerSpeakingState(button, speaking) {
+    if (!button) return;
+    button.dataset.speaking = speaking ? "true" : "false";
+    button.style.opacity = speaking ? "0.6" : "";
+    button.title = speaking ? "Stop audio" : "Play audio";
+}
+
+function _normalizeSpeechText(text="") {
+    return text
+        .replace(/```[\s\S]*?```/g, " ")
+        .replace(/`([^`]+)`/g, "$1")
+        .replace(/!\[.*?\]\(.*?\)/g, " ")
+        .replace(/\[(.*?)\]\(.*?\)/g, "$1")
+        .replace(/[*_>#~]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+async function startVoiceInput(containedElement) {
+    const shadowRoot = chat_box.getShadowRootByContainedElement(containedElement);
+    const host = chat_box.getHostElement(containedElement);
+    const memory = _getMemory(containedElement);
+    const textarea = shadowRoot.querySelector("textarea#messagearea");
+    const micButton = shadowRoot.querySelector("img#mic");
+    const SpeechRecognitionCtor = _getSpeechRecognitionCtor();
+
+    if (!SpeechRecognitionCtor) {
+        alert("Speech-to-text is not supported in this browser.");
+        return;
+    }
+
+    if (memory?.speech?.isListening && memory.speech.recognition) {
+        try { memory.speech.recognition.stop(); } catch (err) {}
+        return;
+    }
+
+    const recognition = new SpeechRecognitionCtor();
+    const lang = host.getAttribute("speechlang") || document.documentElement.lang || navigator.language || "en-US";
+
+    recognition.lang = lang;
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    if ("maxAlternatives" in recognition) recognition.maxAlternatives = 1;
+
+    memory.speech.recognition = recognition;
+    memory.speech.isListening = true;
+    memory.speech.finalTranscript = "";
+    _setMicListeningState(micButton, true);
+
+    recognition.onstart = () => {
+        memory.speech.isListening = true;
+        _setMicListeningState(micButton, true);
+    };
+
+    recognition.onresult = event => {
+        let interimTranscript = "";
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+            const transcript = event.results[i][0]?.transcript || "";
+            if (event.results[i].isFinal) memory.speech.finalTranscript += `${transcript} `;
+            else interimTranscript += transcript;
+        }
+
+        const baseText = textarea.dataset.sttBaseText ?? textarea.value;
+        const combined = `${baseText}${baseText && (memory.speech.finalTranscript || interimTranscript) ? " " : ""}${memory.speech.finalTranscript}${interimTranscript}`
+            .replace(/\s+/g, " ")
+            .trim();
+        textarea.value = combined;
+        textarea.focus();
+    };
+
+    recognition.onerror = event => {
+        if (event.error !== "no-speech" && event.error !== "aborted") console.error("Speech recognition error:", event.error);
+    };
+
+    recognition.onend = () => {
+        const baseText = textarea.dataset.sttBaseText ?? textarea.value;
+        const finalText = `${baseText}${baseText && memory.speech.finalTranscript ? " " : ""}${memory.speech.finalTranscript}`
+            .replace(/\s+/g, " ")
+            .trim();
+        textarea.value = finalText;
+        delete textarea.dataset.sttBaseText;
+
+        memory.speech.isListening = false;
+        memory.speech.recognition = null;
+        memory.speech.finalTranscript = "";
+        _setMicListeningState(micButton, false);
+        textarea.focus();
+    };
+
+    textarea.dataset.sttBaseText = textarea.value.trim();
+
+    try {
+        recognition.start();
+    } catch (err) {
+        console.error("Unable to start speech recognition:", err);
+        delete textarea.dataset.sttBaseText;
+        memory.speech.isListening = false;
+        memory.speech.recognition = null;
+        _setMicListeningState(micButton, false);
+        alert("Could not start voice input.");
+    }
+}
+
+async function playTTS(element) {
+    const memory = _getMemory(element);
+    const aiResponseElement = element.closest("span.airesponse");
+    if (!aiResponseElement) return;
+
+    if (!("speechSynthesis" in window) || typeof SpeechSynthesisUtterance === "undefined") {
+        alert("Text-to-speech is not supported in this browser.");
+        return;
+    }
+
+    if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+        window.speechSynthesis.cancel();
+        if (memory?.speech?.speakingButton) _setSpeakerSpeakingState(memory.speech.speakingButton, false);
+        memory.speech.currentUtterance = null;
+        memory.speech.speakingButton = null;
+        return;
+    }
+
+    const sourceText = aiResponseElement.innerText || aiResponseElement.textContent || "";
+    const textToSpeak = _normalizeSpeechText(sourceText);
+    if (!textToSpeak) return;
+
+    const host = chat_box.getHostElement(element);
+    const utterance = new SpeechSynthesisUtterance(textToSpeak);
+    utterance.lang = host.getAttribute("speechlang") || document.documentElement.lang || navigator.language || "en-US";
+
+    const preferredVoiceName = host.getAttribute("ttsvoice");
+    if (preferredVoiceName) {
+        const voices = window.speechSynthesis.getVoices();
+        const matchedVoice = voices.find(voice => voice.name === preferredVoiceName);
+        if (matchedVoice) utterance.voice = matchedVoice;
+    }
+
+    const rate = parseFloat(host.getAttribute("ttsrate"));
+    const pitch = parseFloat(host.getAttribute("ttspitch"));
+    if (!Number.isNaN(rate)) utterance.rate = rate;
+    if (!Number.isNaN(pitch)) utterance.pitch = pitch;
+
+    memory.speech.currentUtterance = utterance;
+    memory.speech.speakingButton = element;
+    _setSpeakerSpeakingState(element, true);
+
+    utterance.onend = () => {
+        _setSpeakerSpeakingState(element, false);
+        memory.speech.currentUtterance = null;
+        memory.speech.speakingButton = null;
+    };
+
+    utterance.onerror = err => {
+        console.error("Speech synthesis error:", err);
+        _setSpeakerSpeakingState(element, false);
+        memory.speech.currentUtterance = null;
+        memory.speech.speakingButton = null;
+    };
+
+    window.speechSynthesis.speak(utterance);
+}
+
 const _getMemory = containedElement => chat_box.getMemoryByContainedElement(containedElement);
 
 async function downloadAttachedFile(element) {
@@ -307,6 +504,16 @@ async function downloadAttachedFile(element) {
     util.downloadFile(binary, type, filename);
 }
 
-export const chat_box = {trueWebComponentMode: true, elementConnected, elementRendered, send, attach,
-    detach, downloadAttachedFile, saveAsWord, startVoiceInput:(()=>{})(), playTTS: (()=>{})()}
+export const chat_box = {
+    trueWebComponentMode: true,
+    elementConnected,
+    elementRendered,
+    send,
+    attach,
+    detach,
+    downloadAttachedFile,
+    saveAsWord,
+    startVoiceInput,
+    playTTS
+};
 monkshu_component.register("chat-box", `${COMPONENT_PATH}/chat-box.html`, chat_box);

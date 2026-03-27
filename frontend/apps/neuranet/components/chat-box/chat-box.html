@@ -367,6 +367,12 @@ div.thought {
   0% {background-position: -20% 0;}
   100% {background-position: 120% 0;}
 }
+
+img#mic[data-listening="true"],
+img.controls[data-speaking="true"] {
+    opacity: 0.6;
+    transform: scale(0.96);
+}
 </style>
 {{{APP_CONSTANTS.MOBILE_MEDIA_QUERY_PORTRAIT_START}}}
     div#body {padding: 1em 0.5em 1em 0.5em;}
@@ -404,8 +410,7 @@ div.thought {
         <span id="attachedfiles"><!-- attached files go here --></span>
         <input type="checkbox" id="multiline" onclick="this.parentNode.parentNode.querySelector('textarea#messagearea').focus()"><label for="multiline">{{i18n.Multiline}}</label>
         {{#ATTACHMENT_ALLOWED}}<img id="attach" onclick="monkshu_env.components['chat-box'].attach(this)" src="{{{COMPONENT_PATH}}}/img/attach.svg">{{/ATTACHMENT_ALLOWED}}
-        {{#TTS}}<img id="mic" src="{{{COMPONENT_PATH}}}/img/mic.svg" title="{{{i18n.ChatTTSLabel}}}" 
-            onclick="monkshu_env.components['chat-box'].startVoiceInput(this)">{{/TTS}}
+        <img id="mic" src="{{{COMPONENT_PATH}}}/img/mic.svg" title="Start voice input" onclick="monkshu_env.components['chat-box'].startVoiceInput(this)">
         <img id="send" onclick="monkshu_env.components['chat-box'].send(this)" src="{{{COMPONENT_PATH}}}/img/send.svg">
     </span>
 </div>
@@ -454,8 +459,8 @@ div.thought {
                 `chat_${new Date(Date.now()).toLocaleString().replaceAll(' ', '_').replaceAll(',', '')}.html`)">
     <img class="controls hidden" src="{{{COMPONENT_PATH}}}/img/word.svg" id="controlsword"
         onclick="monkshu_env.components['chat-box'].saveAsWord(this.parentNode.parentNode)">
-    {{#STT}}<img class="controls" src="{{{COMPONENT_PATH}}}/img/speaker.svg" title="Play Audio" ttsAPI="/apps/{{app}}/tts"
-            onclick="monkshu_env.components['chat-box'].playTTS(this)">{{/STT}}
+    <img class="controls" src="{{{COMPONENT_PATH}}}/img/speaker.svg" title="Play audio"
+        onclick="monkshu_env.components['chat-box'].playTTS(this)">
 </span>
 
 </template>

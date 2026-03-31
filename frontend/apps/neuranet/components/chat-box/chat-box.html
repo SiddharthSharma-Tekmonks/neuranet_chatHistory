@@ -459,8 +459,10 @@ img.controls[data-speaking="true"] {
                 `chat_${new Date(Date.now()).toLocaleString().replaceAll(' ', '_').replaceAll(',', '')}.html`)">
     <img class="controls hidden" src="{{{COMPONENT_PATH}}}/img/word.svg" id="controlsword"
         onclick="monkshu_env.components['chat-box'].saveAsWord(this.parentNode.parentNode)">
-    <img class="controls" src="{{{COMPONENT_PATH}}}/img/speaker.svg" title="Play audio"
+    <img class="controls" src="{{{COMPONENT_PATH}}}/img/speaker.svg" title="Play audio" data-ttsstate="idle"
         onclick="monkshu_env.components['chat-box'].playTTS(this)">
+    <img class="controls tts-stop hidden" src="{{{COMPONENT_PATH}}}/img/stop.svg" title="Stop audio"
+        onclick="monkshu_env.components['chat-box'].stopTTS(this)">
 </span>
 
 </template>

@@ -35,7 +35,10 @@ async function elementConnected(host) {
         isListening: false,
         finalTranscript: "",
         currentUtterance: null,
-        speakingButton: null
+        speakingButton: null,
+        ttsText: "",
+        ttsPausedAt: null,
+        ttsIsPaused: false
     };
     const typewriter = host.getAttribute("typewriter");
     memory.typewriter = typewriter ? (typewriter.toLowerCase() == "false" ? false : parseInt(host.getAttribute("typewriter"))) : false;
@@ -55,16 +58,14 @@ async function send(containedElement) {
 
     const memory = _getMemory(containedElement);
     if (memory?.speech?.isListening && memory.speech.recognition) {
+        delete userMessageArea.dataset.sttBaseText;  // prevent _onSpeechEnd from repopulating the textarea after send clears it
+        memory.speech.finalTranscript = "";
         try { memory.speech.recognition.stop(); } catch (err) {}
     }
 
-    if (window.speechSynthesis?.speaking || window.speechSynthesis?.pending) {
+    if (window.speechSynthesis?.speaking || window.speechSynthesis?.pending || memory?.speech?.ttsIsPaused) {
         try { window.speechSynthesis.cancel(); } catch (err) {}
-        if (memory?.speech?.speakingButton) _setSpeakerSpeakingState(memory.speech.speakingButton, false);
-        if (memory?.speech) {
-            memory.speech.currentUtterance = null;
-            memory.speech.speakingButton = null;
-        }
+        _cancelCurrentTTS(memory);
     }
 
     // disable send box and controls
@@ -320,6 +321,8 @@ function _renderFileIcon(placeholder, shadowRoot, FILE_EXT) {
     placeholder.replaceWith(t.content.cloneNode(true));
 }
 
+// ─── STT helpers ────────────────────────────────────────────────────────────
+
 function _getSpeechRecognitionCtor() {
     return window.SpeechRecognition || window.webkitSpeechRecognition || null;
 }
@@ -329,13 +332,6 @@ function _setMicListeningState(button, listening) {
     button.dataset.listening = listening ? "true" : "false";
     button.style.opacity = listening ? "0.6" : "";
     button.title = listening ? "Stop voice input" : "Start voice input";
-}
-
-function _setSpeakerSpeakingState(button, speaking) {
-    if (!button) return;
-    button.dataset.speaking = speaking ? "true" : "false";
-    button.style.opacity = speaking ? "0.6" : "";
-    button.title = speaking ? "Stop audio" : "Play audio";
 }
 
 function _normalizeSpeechText(text="") {
@@ -349,15 +345,54 @@ function _normalizeSpeechText(text="") {
         .trim();
 }
 
+/** Creates and configures a SpeechRecognition instance. Returns null if unsupported. */
+function _initRecognition(host) {
+    const SpeechRecognitionCtor = _getSpeechRecognitionCtor();
+    if (!SpeechRecognitionCtor) return null;
+    const recognition = new SpeechRecognitionCtor();
+    recognition.lang = host.getAttribute("speechlang") || document.documentElement.lang || navigator.language || "en-US";
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    if ("maxAlternatives" in recognition) recognition.maxAlternatives = 1;
+    return recognition;
+}
+
+/** Merges interim + final STT results into the textarea. */
+function _onSpeechResult(event, memory, textarea) {
+    let interimTranscript = "";
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0]?.transcript || "";
+        if (event.results[i].isFinal) memory.speech.finalTranscript += `${transcript} `;
+        else interimTranscript += transcript;
+    }
+    const baseText = textarea.dataset.sttBaseText ?? textarea.value;
+    const combined = `${baseText}${baseText && (memory.speech.finalTranscript || interimTranscript) ? " " : ""}${memory.speech.finalTranscript}${interimTranscript}`
+        .replace(/\s+/g, " ").trim();
+    textarea.value = combined;
+    textarea.focus();
+}
+
+/** Cleans up STT state when recognition ends. */
+function _onSpeechEnd(memory, micButton, textarea) {
+    const baseText = textarea.dataset.sttBaseText ?? textarea.value;
+    textarea.value = `${baseText}${baseText && memory.speech.finalTranscript ? " " : ""}${memory.speech.finalTranscript}`
+        .replace(/\s+/g, " ").trim();
+    delete textarea.dataset.sttBaseText;
+    memory.speech.isListening = false;
+    memory.speech.recognition = null;
+    memory.speech.finalTranscript = "";
+    _setMicListeningState(micButton, false);
+    textarea.focus();
+}
+
 async function startVoiceInput(containedElement) {
     const shadowRoot = chat_box.getShadowRootByContainedElement(containedElement);
     const host = chat_box.getHostElement(containedElement);
     const memory = _getMemory(containedElement);
     const textarea = shadowRoot.querySelector("textarea#messagearea");
     const micButton = shadowRoot.querySelector("img#mic");
-    const SpeechRecognitionCtor = _getSpeechRecognitionCtor();
 
-    if (!SpeechRecognitionCtor) {
+    if (!_getSpeechRecognitionCtor()) {
         alert("Speech-to-text is not supported in this browser.");
         return;
     }
@@ -367,13 +402,8 @@ async function startVoiceInput(containedElement) {
         return;
     }
 
-    const recognition = new SpeechRecognitionCtor();
-    const lang = host.getAttribute("speechlang") || document.documentElement.lang || navigator.language || "en-US";
-
-    recognition.lang = lang;
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    if ("maxAlternatives" in recognition) recognition.maxAlternatives = 1;
+    const recognition = _initRecognition(host);
+    if (!recognition) return;
 
     memory.speech.recognition = recognition;
     memory.speech.isListening = true;
@@ -384,41 +414,11 @@ async function startVoiceInput(containedElement) {
         memory.speech.isListening = true;
         _setMicListeningState(micButton, true);
     };
-
-    recognition.onresult = event => {
-        let interimTranscript = "";
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-            const transcript = event.results[i][0]?.transcript || "";
-            if (event.results[i].isFinal) memory.speech.finalTranscript += `${transcript} `;
-            else interimTranscript += transcript;
-        }
-
-        const baseText = textarea.dataset.sttBaseText ?? textarea.value;
-        const combined = `${baseText}${baseText && (memory.speech.finalTranscript || interimTranscript) ? " " : ""}${memory.speech.finalTranscript}${interimTranscript}`
-            .replace(/\s+/g, " ")
-            .trim();
-        textarea.value = combined;
-        textarea.focus();
-    };
-
+    recognition.onresult = event => _onSpeechResult(event, memory, textarea);
     recognition.onerror = event => {
         if (event.error !== "no-speech" && event.error !== "aborted") console.error("Speech recognition error:", event.error);
     };
-
-    recognition.onend = () => {
-        const baseText = textarea.dataset.sttBaseText ?? textarea.value;
-        const finalText = `${baseText}${baseText && memory.speech.finalTranscript ? " " : ""}${memory.speech.finalTranscript}`
-            .replace(/\s+/g, " ")
-            .trim();
-        textarea.value = finalText;
-        delete textarea.dataset.sttBaseText;
-
-        memory.speech.isListening = false;
-        memory.speech.recognition = null;
-        memory.speech.finalTranscript = "";
-        _setMicListeningState(micButton, false);
-        textarea.focus();
-    };
+    recognition.onend = () => _onSpeechEnd(memory, micButton, textarea);
 
     textarea.dataset.sttBaseText = textarea.value.trim();
 
@@ -434,62 +434,146 @@ async function startVoiceInput(containedElement) {
     }
 }
 
+// ─── TTS helpers ────────────────────────────────────────────────────────────
+
+/**
+ * Sets the visual state of the TTS play/pause button and shows or hides the
+ * adjacent stop button.  state: 'idle' | 'speaking' | 'paused'
+ */
+function _setTTSButtonState(button, state) {
+    if (!button) return;
+    const iconMap = { idle: "speaker.svg", speaking: "pause.svg", paused: "speaker.svg" };
+    const titleMap = { idle: "Play audio", speaking: "Pause audio", paused: "Resume audio" };
+    button.src = `${COMPONENT_PATH}/img/${iconMap[state]}`;
+    button.title = titleMap[state];
+    button.dataset.ttsstate = state;
+    button.style.opacity = state === "paused" ? "0.5" : "";
+    const stopBtn = button.closest("span.controls")?.querySelector("img.tts-stop");
+    if (stopBtn) stopBtn.classList.toggle("hidden", state === "idle");
+}
+
+/** Cancels any in-progress or paused TTS and fully resets TTS memory state. */
+function _cancelCurrentTTS(memory) {
+    try { window.speechSynthesis.cancel(); } catch (_) {}
+    if (memory?.speech?.speakingButton) _setTTSButtonState(memory.speech.speakingButton, "idle");
+    if (memory?.speech) {
+        memory.speech.currentUtterance = null;
+        memory.speech.speakingButton = null;
+        memory.speech.ttsText = "";
+        memory.speech.ttsPausedAt = null;
+        memory.speech.ttsIsPaused = false;
+    }
+}
+
+/** Creates and configures a SpeechSynthesisUtterance for the given text. */
+function _buildTTSUtterance(text, host) {
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = host.getAttribute("speechlang") || document.documentElement.lang || navigator.language || "en-US";
+    const preferredVoiceName = host.getAttribute("ttsvoice");
+    if (preferredVoiceName) {
+        const matchedVoice = window.speechSynthesis.getVoices().find(v => v.name === preferredVoiceName);
+        if (matchedVoice) utterance.voice = matchedVoice;
+    }
+    const rate = parseFloat(host.getAttribute("ttsrate"));
+    const pitch = parseFloat(host.getAttribute("ttspitch"));
+    if (!Number.isNaN(rate)) utterance.rate = rate;
+    if (!Number.isNaN(pitch)) utterance.pitch = pitch;
+    return utterance;
+}
+
+/**
+ * Starts speaking from charOffset into memory.speech.ttsText.
+ * Wires up boundary tracking, end, and error handlers.
+ */
+function _startTTSFromOffset(charOffset, element, memory) {
+    const host = chat_box.getHostElement(element);
+    const text = memory.speech.ttsText.slice(charOffset);
+    if (!text.trim()) { _cancelCurrentTTS(memory); return; }
+
+    const utterance = _buildTTSUtterance(text, host);
+
+    utterance.onboundary = event => {
+        memory.speech.ttsPausedAt = charOffset + event.charIndex;
+    };
+
+    utterance.onend = () => {
+        if (memory.speech.ttsIsPaused) return;  // user paused — don't reset
+        _setTTSButtonState(element, "idle");
+        memory.speech.currentUtterance = null;
+        memory.speech.speakingButton = null;
+        memory.speech.ttsText = "";
+        memory.speech.ttsPausedAt = null;
+    };
+
+    utterance.onerror = err => {
+        if (memory.speech.ttsIsPaused) return;  // user paused — not an error
+        console.error("Speech synthesis error:", err);
+        _setTTSButtonState(element, "idle");
+        memory.speech.currentUtterance = null;
+        memory.speech.speakingButton = null;
+        memory.speech.ttsText = "";
+        memory.speech.ttsPausedAt = null;
+    };
+
+    memory.speech.currentUtterance = utterance;
+    _setTTSButtonState(element, "speaking");
+    window.speechSynthesis.speak(utterance);
+}
+
+/** Pauses the current utterance by cancelling and saving the char position. */
+function _pauseTTS(memory, element) {
+    memory.speech.ttsIsPaused = true;
+    window.speechSynthesis.cancel();    // cancel fires onend/onerror; ttsIsPaused guards them
+    _setTTSButtonState(element, "paused");
+}
+
+/** Resumes TTS from the saved char position. */
+function _resumeTTS(memory, element) {
+    memory.speech.ttsIsPaused = false;
+    memory.speech.speakingButton = element;
+    _startTTSFromOffset(memory.speech.ttsPausedAt ?? 0, element, memory);
+}
+
+/**
+ * Main TTS entry point — cycles: idle → speaking → paused → speaking …
+ * Called by the speaker button in each AI response.
+ */
 async function playTTS(element) {
     const memory = _getMemory(element);
-    const aiResponseElement = element.closest("span.airesponse");
-    if (!aiResponseElement) return;
 
     if (!("speechSynthesis" in window) || typeof SpeechSynthesisUtterance === "undefined") {
         alert("Text-to-speech is not supported in this browser.");
         return;
     }
 
-    if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
-        window.speechSynthesis.cancel();
-        if (memory?.speech?.speakingButton) _setSpeakerSpeakingState(memory.speech.speakingButton, false);
-        memory.speech.currentUtterance = null;
-        memory.speech.speakingButton = null;
-        return;
+    const state = element.dataset.ttsstate || "idle";
+
+    if (state === "speaking") { _pauseTTS(memory, element); return; }
+    if (state === "paused")   { _resumeTTS(memory, element); return; }
+
+    // idle — start from the beginning of this response
+    if (window.speechSynthesis.speaking || window.speechSynthesis.pending || memory?.speech?.ttsIsPaused) {
+        _cancelCurrentTTS(memory);
     }
 
-    const sourceText = aiResponseElement.innerText || aiResponseElement.textContent || "";
-    const textToSpeak = _normalizeSpeechText(sourceText);
+    const aiResponseElement = element.closest("span.airesponse");
+    if (!aiResponseElement) return;
+    const textToSpeak = _normalizeSpeechText(aiResponseElement.innerText || aiResponseElement.textContent || "");
     if (!textToSpeak) return;
 
-    const host = chat_box.getHostElement(element);
-    const utterance = new SpeechSynthesisUtterance(textToSpeak);
-    utterance.lang = host.getAttribute("speechlang") || document.documentElement.lang || navigator.language || "en-US";
-
-    const preferredVoiceName = host.getAttribute("ttsvoice");
-    if (preferredVoiceName) {
-        const voices = window.speechSynthesis.getVoices();
-        const matchedVoice = voices.find(voice => voice.name === preferredVoiceName);
-        if (matchedVoice) utterance.voice = matchedVoice;
-    }
-
-    const rate = parseFloat(host.getAttribute("ttsrate"));
-    const pitch = parseFloat(host.getAttribute("ttspitch"));
-    if (!Number.isNaN(rate)) utterance.rate = rate;
-    if (!Number.isNaN(pitch)) utterance.pitch = pitch;
-
-    memory.speech.currentUtterance = utterance;
+    memory.speech.ttsText = textToSpeak;
+    memory.speech.ttsPausedAt = 0;
     memory.speech.speakingButton = element;
-    _setSpeakerSpeakingState(element, true);
+    _startTTSFromOffset(0, element, memory);
+}
 
-    utterance.onend = () => {
-        _setSpeakerSpeakingState(element, false);
-        memory.speech.currentUtterance = null;
-        memory.speech.speakingButton = null;
-    };
-
-    utterance.onerror = err => {
-        console.error("Speech synthesis error:", err);
-        _setSpeakerSpeakingState(element, false);
-        memory.speech.currentUtterance = null;
-        memory.speech.speakingButton = null;
-    };
-
-    window.speechSynthesis.speak(utterance);
+/**
+ * Stops TTS entirely and resets the button to idle.
+ * Called by the stop button in each AI response.
+ */
+function stopTTS(element) {
+    const memory = _getMemory(element);
+    _cancelCurrentTTS(memory);
 }
 
 const _getMemory = containedElement => chat_box.getMemoryByContainedElement(containedElement);
@@ -514,6 +598,7 @@ export const chat_box = {
     downloadAttachedFile,
     saveAsWord,
     startVoiceInput,
-    playTTS
+    playTTS,
+    stopTTS
 };
 monkshu_component.register("chat-box", `${COMPONENT_PATH}/chat-box.html`, chat_box);
